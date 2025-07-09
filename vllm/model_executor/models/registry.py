@@ -17,7 +17,8 @@ from collections.abc import Callable, Set
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TypeVar
+import multiprocessing
 
 import torch.nn as nn
 import transformers
@@ -31,16 +32,7 @@ from vllm.config import (
 from vllm.logger import init_logger
 from vllm.logging_utils import logtime
 from vllm.transformers_utils.dynamic_module import try_get_class_from_dynamic_module
-from vllm.utils.hashing import safe_hash
-
-if TYPE_CHECKING:
-    from vllm.config.model import AttnTypeStr
-    from vllm.config.pooler import SequencePoolingType, TokenPoolingType
-else:
-    AttnTypeStr = Any
-    SequencePoolingType = Any
-    TokenPoolingType = Any
-
+import cloudpickle
 
 from .interfaces import (
     has_inner_state,
@@ -1227,36 +1219,73 @@ ModelRegistry = _ModelRegistry(
 )
 
 _T = TypeVar("_T")
-
+def _worker_function(serialized_data):
+    """Worker function that runs in the forked process"""
+    import cloudpickle
+    fn, output_filepath = cloudpickle.loads(serialized_data)
+    try:
+        result = fn()
+        with open(output_filepath, "wb") as f:
+            pickle.dump(result, f)
+        return True
+    except Exception as e:
+        # Log the exception and re-raise it
+        logger.error(f"Error in worker process: {e}")
+        raise
 
 def _run_in_subprocess(fn: Callable[[], _T]) -> _T:
-    # NOTE: We use a temporary directory instead of a temporary file to avoid
-    # issues like https://stackoverflow.com/questions/23212435/permission-denied-to-write-to-my-temporary-file
+    # Set the start method to forkserver
+    ctx = multiprocessing.get_context('fork')
+    
     with tempfile.TemporaryDirectory() as tempdir:
-        output_filepath = os.path.join(tempdir, "registry_output.tmp")
-
-        # `cloudpickle` allows pickling lambda functions directly
         import cloudpickle
+        output_filepath = os.path.join(tempdir, "registry_output.tmp")
+        
+        # Serialize the function and output path using cloudpickle
+        serialized_data = cloudpickle.dumps((fn, output_filepath))
+        
+        logger.info("Launched the forkserver process")
+        
+        # Use a pool with a single worker for better error handling
+        with ctx.Pool(1) as pool:
+            try:
+                # Submit the task and get the result
+                result = pool.apply(_worker_function, (serialized_data,))
+                logger.info("Forkserver process finished")
+                
+                # Load and return the result
+                with open(output_filepath, "rb") as f:
+                    return pickle.load(f)
+                    
+            except Exception as e:
+                raise RuntimeError(f"Error raised in forkserver process: {e}") from e
 
-        input_bytes = cloudpickle.dumps((fn, output_filepath))
 
-        # cannot use `sys.executable __file__` here because the script
-        # contains relative imports
-        returned = subprocess.run(
-            _SUBPROCESS_COMMAND, input=input_bytes, capture_output=True
-        )
+# def _run_in_subprocess(fn: Callable[[], _T]) -> _T:
+#     # NOTE: We use a temporary directory instead of a temporary file to avoid
+#     # issues like https://stackoverflow.com/questions/23212435/permission-denied-to-write-to-my-temporary-file
+#     with tempfile.TemporaryDirectory() as tempdir:
+#         output_filepath = os.path.join(tempdir, "registry_output.tmp")
 
-        # check if the subprocess is successful
-        try:
-            returned.check_returncode()
-        except Exception as e:
-            # wrap raised exception to provide more information
-            raise RuntimeError(
-                f"Error raised in subprocess:\n{returned.stderr.decode()}"
-            ) from e
+#         # `cloudpickle` allows pickling lambda functions directly
+#         input_bytes = cloudpickle.dumps((fn, output_filepath))
 
-        with open(output_filepath, "rb") as f:
-            return pickle.load(f)
+#         # cannot use `sys.executable __file__` here because the script
+#         # contains relative imports
+#         returned = subprocess.run(_SUBPROCESS_COMMAND,
+#                                   input=input_bytes,
+#                                   capture_output=True)
+
+#         # check if the subprocess is successful
+#         try:
+#             returned.check_returncode()
+#         except Exception as e:
+#             # wrap raised exception to provide more information
+#             raise RuntimeError(f"Error raised in subprocess:\n"
+#                                f"{returned.stderr.decode()}") from e
+
+#         with open(output_filepath, "rb") as f:
+#             return pickle.load(f)
 
 
 def _run() -> None:

@@ -11,17 +11,8 @@ import psutil
 import torch
 import torch.types
 
-from vllm.platforms import current_platform
-
-from .mem_constants import GiB_bytes, MiB_bytes
-
-
-def format_mib(b: int) -> str:
-    return f"{round(b / MiB_bytes, 2)}"
-
-
-def format_gib(b: int) -> str:
-    return f"{round(b / GiB_bytes, 2)}"
+from .mem_constants import GiB_bytes
+import os
 
 
 @cache
@@ -51,16 +42,26 @@ class DeviceMemoryProfiler:
         return current_platform.get_current_memory_usage(self.device)
 
     def __enter__(self):
-        self.initial_memory = self.current_memory_usage()
+        
+        env_mem_str = os.environ.get("VLLM_KVC_MEM_GB")
+
+        if env_mem_str is None:
+            self.initial_memory = self.current_memory_usage()
         # This allows us to call methods of the context manager if needed
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.final_memory = self.current_memory_usage()
-        self.consumed_memory = self.final_memory - self.initial_memory
+        env_mem_str = os.environ.get("VLLM_KVC_MEM_GB")
 
-        # Force garbage collection
-        gc.collect()
+        if env_mem_str is None:
+            
+            self.final_memory = self.current_memory_usage()
+            self.consumed_memory = self.final_memory - self.initial_memory
+
+            # Force garbage collection
+            gc.collect()
+        else:
+            self.consumed_memory = 0
 
 
 @dataclass
