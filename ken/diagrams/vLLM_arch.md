@@ -37,15 +37,15 @@ graph TD
     LLM_Class -- "Adds request" --> AsyncEngine
     API_Server -- "Adds request" --> AsyncEngine
     
-    AsyncEngine -- "1. Tokenize" --> Tokenizer
+    AsyncEngine -- "Tokenize" --> Tokenizer
     Tokenizer -- "Input IDs" --> Scheduler
     
-    Scheduler -- "2. Dispatch Batched Inputs" --> ToWorkers((To Workers))
+    Scheduler -- "Dispatch Batched Inputs" --> ToWorkers((To Workers))
     
-    FromWorkers((From Workers)) -- "3. Receive Generated IDs" --> OutputProcessor
-    OutputProcessor -- "4. Detokenize Text" --> AsyncEngine
+    FromWorkers((From Workers)) -- "Receive Generated IDs" --> OutputProcessor
+    OutputProcessor -- "Detokenize Text" --> AsyncEngine
     
-    AsyncEngine -- "5. Stream Final Output" --> ClientApp
+    AsyncEngine -- "Stream Final Output" --> ClientApp
 
     %% Styling
     classDef client fill:#c9d,stroke:#333,stroke-width:2px;
