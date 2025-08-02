@@ -47,15 +47,6 @@ graph TD
     
     AsyncEngine -- "Stream Final Output" --> ClientApp
 
-    %% Styling
-    classDef client fill:#c9d,stroke:#333,stroke-width:2px;
-    classDef entrypoint fill:#ccf,stroke:#333,stroke-width:2px;
-    classDef engine fill:#9cf,stroke:#333,stroke-width:2px;
-    classDef flow fill:#f99,stroke:#333,stroke-width:2px;
-
-    class ClientApp,LLM_Class,API_Server client;
-    class AsyncEngine,Engine,Scheduler,Tokenizer,OutputProcessor engine;
-    class ToWorkers,FromWorkers flow;
 ```
 
 ## 2. vLLM Worker Architecture
@@ -92,10 +83,4 @@ graph TD
     W2 -- "Generated Token IDs" --> ToEngine
     Wn -- "Generated Token IDs" --> ToEngine
 
-    %% Styling
-    classDef worker fill:#f99,stroke:#333,stroke-width:2px;
-    classDef flow fill:#9cf,stroke:#333,stroke-width:2px;
-
-    class W1,MR1,M1,GPU1,W2,MR2,M2,GPU2,Wn worker;
-    class FromEngine,ToEngine flow;
 ```
