@@ -5,6 +5,7 @@ This document contains two diagrams that illustrate the architecture of the vLLM
 ## 1. vLLM Engine Architecture
 
 This diagram shows the flow of requests from the client to the vLLM engine. The engine manages tokenization, scheduling, and processing, then dispatches tasks to the workers.
+All-reduce is for tensor parallism, while P2P is for Pipeline parallelism
 
 ```mermaid
 graph TD
