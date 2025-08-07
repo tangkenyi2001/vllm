@@ -235,7 +235,8 @@ class ParallelConfig:
     """Backend to use for data parallel, either "mp" or "ray"."""
     data_parallel_external_lb: bool = False
  ```
- The tensor_parralel_size and data_parallel_size determine the number of workers
+ The tensor_parralel_size and data_parallel_size determine the number of workers. Learn more [here](https://github.com/tangkenyi2001/vllm/blob/ken/explore/docs/serving/distributed_serving.md)
+ Tensor Parallelism is to split a layer into multiple GPUs, while Pipeline parallelism processes each layer sequentially in different GPUs
 # vLLM Worker
 
 The `Worker` class in vLLM is responsible for executing a partition of the model on a single GPU. It is a crucial component for both single-GPU and distributed inference, managing the model, KV cache, and the execution of the forward pass.
