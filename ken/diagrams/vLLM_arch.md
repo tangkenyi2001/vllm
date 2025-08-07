@@ -5,7 +5,6 @@ This document contains two diagrams that illustrate the architecture of the vLLM
 ## 1. vLLM Engine Architecture
 
 This diagram shows the flow of requests from the client to the vLLM engine. The engine manages tokenization, scheduling, and processing, then dispatches tasks to the workers.
-All-reduce is for tensor parallism, while P2P is for Pipeline parallelism
 
 ```mermaid
 graph TD
@@ -29,22 +28,25 @@ graph TD
         end
 
         AsyncEngine --> Engine
-        Engine --> Tokenizer
-        Engine --> Scheduler
-        Engine --> OutputProcessor
+        OutputProcessor -- "Detokenize" --> Detokenizer
+        OutputProcessor -- "If Detokenize setting not set" 
+        --> Engine
+        Detokenizer -- "Detokenize Text" --> Engine
+        Engine -- "Tokenize" --> Tokenizer
+        Engine -- "If Tokenize setting not set" --> Scheduler
     end
 
     %% Define Flow
     LLM_Class -- "Adds request" --> AsyncEngine
     API_Server -- "Adds request" --> AsyncEngine
     
-    AsyncEngine -- "Tokenize" --> Tokenizer
+    
     Tokenizer -- "Input IDs" --> Scheduler
     
     Scheduler -- "Dispatch Batched Inputs" --> ToWorkers((To Workers))
     
     FromWorkers((From Workers)) -- "Receive Generated IDs" --> OutputProcessor
-    OutputProcessor -- "Detokenize Text" --> AsyncEngine
+    
     
     AsyncEngine -- "Stream Final Output" --> ClientApp
 
@@ -53,7 +55,10 @@ graph TD
 ## 2. vLLM Worker Architecture
 
 This diagram illustrates how workers receive tasks from the engine, execute the model in a distributed fashion across multiple GPUs, and send results back.
+### Tensor Parallism and Pipeline Parallelism
+All-reduce is for tensor parallism, does recomputation to ensure the model is in sync.
 
+P2P is for Pipeline parallelism, which merely passes data to the next layer
 ```mermaid
 graph TD
     FromEngine((From Engine))
@@ -113,10 +118,6 @@ The `LLMEngine` is the synchronous, central orchestrator of the vLLM system. It 
         *   Calls the distributed `ModelExecutor` to run the model forward pass.
         *   Processes the model outputs, including decoding, sampling, and applying logits processors.
         *   Updates the state of sequence groups (e.g., appending new tokens, marking them as finished).
-
-5.  **State Management**:
-    *   Maintains the state of all sequence groups, including their status (e.g., `RUNNING`, `WAITING`, `FINISHED`).
-    *   Manages LoRA adapters, allowing for dynamic loading and unloading.
 
 ### Core Components:
 
@@ -236,7 +237,9 @@ class ParallelConfig:
     data_parallel_external_lb: bool = False
  ```
  The tensor_parralel_size and data_parallel_size determine the number of workers. Learn more [here](https://github.com/tangkenyi2001/vllm/blob/ken/explore/docs/serving/distributed_serving.md)
- Tensor Parallelism is to split a layer into multiple GPUs, while Pipeline parallelism processes each layer sequentially in different GPUs
+
+ Tensor Parallelism is to split a layer into multiple GPUs, while 
+ Pipeline parallelism processes each layer sequentially in different GPUs
 # vLLM Worker
 
 The `Worker` class in vLLM is responsible for executing a partition of the model on a single GPU. It is a crucial component for both single-GPU and distributed inference, managing the model, KV cache, and the execution of the forward pass.
