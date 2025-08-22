@@ -20,7 +20,7 @@ from typing import Any, Callable, Optional, Union, cast
 import cloudpickle
 
 import vllm.envs as envs
-from vllm.config import VllmConfig
+from vllm.config import VllmConfig, ModelConfig, ParallelConfig
 from vllm.distributed import (destroy_distributed_environment,
                               destroy_model_parallel)
 from vllm.distributed.device_communicators.shm_broadcast import (Handle,
@@ -39,9 +39,9 @@ from vllm.worker.worker_base import WorkerWrapperBase
 logger = init_logger(__name__)
 
 
-class MultiprocExecutor(Executor):
+class WorkerController(Executor):
 
-    def _init_executor(self) -> None:
+    def __init__(self, number_of_gpus: int) -> None:
         # Call self.shutdown at exit to clean up
         # and ensure workers will be terminated.
         self._finalizer = weakref.finalize(self, self.shutdown)
@@ -50,20 +50,23 @@ class MultiprocExecutor(Executor):
         self.failure_callback: Optional[FailureCallback] = None
         self.io_thread_pool: Optional[ThreadPoolExecutor] = None
 
-        self.world_size = self.parallel_config.world_size
-        tensor_parallel_size = self.parallel_config.tensor_parallel_size
-        pp_parallel_size = self.parallel_config.pipeline_parallel_size
-        assert self.world_size == tensor_parallel_size * pp_parallel_size, (
-            f"world_size ({self.world_size}) must be equal to the "
-            f"tensor_parallel_size ({tensor_parallel_size}) x pipeline"
-            f"_parallel_size ({pp_parallel_size}). ")
+        self.invoker = None
+        # create a dummy vlm_config
+        dummy_model_config = ModelConfig(model="")
+        parallel_config = ParallelConfig(world_size=number_of_gpus)
+        self.vllm_config = VllmConfig(
+            model_config=dummy_model_config, parallel_config=parallel_config)
+
+        # Should not be initialised no vllm config
+        self.world_size = self.vllm_config.parallel_config.world_size
 
         # Set multiprocessing envs that are common to V0 and V1
-        set_multiprocessing_worker_envs(self.parallel_config)
 
         # Multiprocessing-based executor does not support multi-node setting.
         # Since it only works for single node, we can use the loopback address
         # get_loopback_ip() for communication.
+
+        # can be done
         distributed_init_method = get_distributed_init_method(
             get_loopback_ip(), get_open_port())
 
@@ -88,7 +91,6 @@ class MultiprocExecutor(Executor):
                         distributed_init_method=distributed_init_method,
                         input_shm_handle=scheduler_output_handle,
                     ))
-
             # Workers must be created before wait_for_ready to avoid
             # deadlock, since worker.init_device() does a device sync.
             self.workers = WorkerProc.wait_for_ready(unready_workers)
@@ -124,6 +126,13 @@ class MultiprocExecutor(Executor):
         self.has_connector = self.vllm_config.kv_transfer_config is not None
         self.kv_output_aggregator = KVOutputAggregator(
             self.parallel_config.world_size)
+
+    def hold(self, vllm_config: VllmConfig):
+        # should set vllmConfig
+        set_multiprocessing_worker_envs(self.parallel_config)
+        self.workers = WorkerProc.update_vllm_config()
+
+    def delete(self)
 
     def start_worker_monitor(self):
         workers = self.workers
@@ -324,6 +333,7 @@ class UnreadyWorkerProcHandle:
     proc: BaseProcess
     rank: int
     ready_pipe: Connection
+    vllm_config_writer: Connection
     death_writer: Optional[Connection] = None
 
 
@@ -332,6 +342,7 @@ class WorkerProcHandle:
     proc: BaseProcess
     rank: int
     worker_response_mq: MessageQueue  # The worker process writes to this MQ
+    vllm_config_writer: Connection
     death_writer: Optional[Connection] = None
 
     @classmethod
@@ -342,6 +353,7 @@ class WorkerProcHandle:
             proc=unready_handle.proc,
             rank=unready_handle.rank,
             worker_response_mq=worker_response_mq,
+            vllm_config_writer=unready_handle.vllm_config_writer,
             death_writer=unready_handle.death_writer,
         )
 
@@ -414,6 +426,8 @@ class WorkerProc:
         # Create death pipe to detect parent process exit
         death_reader, death_writer = context.Pipe(duplex=False)
 
+        vllm_config_reader, vllm_config_writer = context.Pipe(duplex=False)
+
         process_kwargs = {
             "vllm_config": vllm_config,
             "local_rank": local_rank,
@@ -422,6 +436,7 @@ class WorkerProc:
             "input_shm_handle": input_shm_handle,
             "ready_pipe": (reader, writer),
             "death_pipe": death_reader,
+            "vllm_config_pipe": vllm_config_reader,
         }
         # Run EngineCore busy loop in background process.
         proc = context.Process(target=WorkerProc.worker_main,
@@ -433,7 +448,27 @@ class WorkerProc:
         writer.close()
         # Keep death_writer open in parent - when parent exits,
         # death_reader in child will get EOFError
-        return UnreadyWorkerProcHandle(proc, rank, reader, death_writer)
+        return UnreadyWorkerProcHandle(proc, rank, reader, death_writer, vllm_config_writer)
+
+    @staticmethod
+    def update_vllm_config(
+        proc_handles: list[WorkerProcHandle], vllm_config: VllmConfig
+    ) -> list[WorkerProcHandle]:
+        pipes = {handle.vllm_config_writer: handle for handle in proc_handles}
+        for writer, handle in pipes.items():
+            try:
+                writer.send(vllm_config)
+            except (BrokenPipeError, EOFError):
+                logger.error(
+                    f"Worker {handle.rank} is not available for config update")
+
+        return proc_handles
+
+    @staticmethod
+    def update_process_vllm_config(
+        vllm_config: VllmConfig
+    ) -> None:
+        # change the vllmConfig
 
     @staticmethod
     def wait_for_ready(
@@ -505,6 +540,7 @@ class WorkerProc:
         # tuple[Connection, Connection]
         reader, ready_writer = kwargs.pop("ready_pipe")
         death_pipe = kwargs.pop("death_pipe", None)
+        vllm_config_pipe = kwargs.pop("config_pipe", None)
 
         # Start death monitoring thread if death_pipe is provided
         if death_pipe is not None:
@@ -525,6 +561,25 @@ class WorkerProc:
                                    daemon=True,
                                    name="WorkerDeathMonitor")
             death_monitor.start()
+
+        if vllm_config_pipe is not None:
+            def monitor_config_updates():
+                try:
+                    while True:
+                        new_cfg = vllm_config_pipe.recv()
+                        logger.info(
+                            f"Worker {os.getpid()} received new config")
+                        # You probably want a setter method inside WorkerProc:
+                        worker.update_process_vllm_config(new_cfg)
+                except EOFError:
+                    logger.info("Config pipe closed, no more updates")
+                except Exception as e:
+                    logger.warning(f"Config monitoring error: {e}")
+
+            config_monitor = Thread(target=monitor_config_updates,
+                                    daemon=True,
+                                    name="WorkerVllmConfigMonitor")
+            config_monitor.start()
 
         try:
             reader.close()
