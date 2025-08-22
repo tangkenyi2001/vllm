@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import uuid
 import multiprocessing
 import os
 import pickle
@@ -39,6 +40,48 @@ from vllm.worker.worker_base import WorkerWrapperBase
 logger = init_logger(__name__)
 
 
+class ResourceAllocator:
+    def __init__(self, num_resources: int):
+        # 0 means free/unassigned
+        self.resources = {i: 0 for i in range(num_resources)}
+
+    def assign(self, num: int, uid: str = None):
+        assigned_ranks = []
+        for rank, val in self.resources.items():
+            if val == 0 and len(assigned_ranks) < num:
+                self.resources[rank] = uid
+                assigned_ranks.append(rank)
+
+        if len(assigned_ranks) < num:
+            # Not enough free resources
+            raise RuntimeError(
+                f"Only {len(assigned_ranks)} free resources, requested {num}"
+            )
+
+        return assigned_ranks
+
+    def release_by_uuid(self, uid: str):
+        """Release all resources assigned to this UUID."""
+        assigned_ranks = []
+        for rank, val in self.resources.items():
+            if val == uid:
+                self.resources[rank] = 0
+                assigned_ranks.append(rank)
+        return assigned_ranks
+
+    def free(self):
+        """Return list of currently free ranks."""
+        return [rank for rank, val in self.resources.items() if val == 0]
+
+    def num_free(self) -> int:
+        """Return the number of currently free ranks."""
+        return sum(1 for val in self.resources.values() if val == 0)
+
+    def status(self):
+        """Return mapping: rank -> UUID/0."""
+        return dict(self.resources)
+
+
 class WorkerController(Executor):
 
     def __init__(self, number_of_gpus: int) -> None:
@@ -59,7 +102,8 @@ class WorkerController(Executor):
 
         # Should not be initialised no vllm config
         self.world_size = self.vllm_config.parallel_config.world_size
-
+        self.available_workers = number_of_gpus
+        self.resource = ResourceAllocator(num_resources=number_of_gpus)
         # Set multiprocessing envs that are common to V0 and V1
 
         # Multiprocessing-based executor does not support multi-node setting.
@@ -127,12 +171,27 @@ class WorkerController(Executor):
         self.kv_output_aggregator = KVOutputAggregator(
             self.parallel_config.world_size)
 
-    def hold(self, vllm_config: VllmConfig):
+    def create(self, vllm_config: VllmConfig, engineUUID: str):
         # should set vllmConfig
+        required = vllm_config.parallel_config.world_size
+        available = self.available_workers
+        if required > available:
+            raise RuntimeError(
+                f"Not enough resources: requested world_size={required}, "
+                f"but only {available} workers are available."
+            )
+        self.available_workers -= required
+        updatedranks = self.resource.assign(required, engineUUID)
         set_multiprocessing_worker_envs(self.parallel_config)
-        self.workers = WorkerProc.update_vllm_config()
+        self.workers = WorkerProc.hold(
+            proc_handles=self.workers, vllm_config=vllm_config, updatedranks=updatedranks, engineUUID=engineUUID)
+        # update workers
 
-    def delete(self)
+    def delete(self, engineUUID: str):
+        updated_ranks = self.resource.release_by_uuid(engineUUID)
+        self.available_workers = self.resource.num_free()
+        self.workers = WorkerProc.unhold(
+            proc_handles=self.workers, updated_ranks=updated_ranks)
 
     def start_worker_monitor(self):
         workers = self.workers
@@ -343,6 +402,7 @@ class WorkerProcHandle:
     rank: int
     worker_response_mq: MessageQueue  # The worker process writes to this MQ
     vllm_config_writer: Connection
+    engineUUID: str | None = None
     death_writer: Optional[Connection] = None
 
     @classmethod
@@ -371,45 +431,19 @@ class WorkerProc:
         distributed_init_method: str,
         input_shm_handle: Handle,
     ):
-        self.rank = rank
-        wrapper = WorkerWrapperBase(vllm_config=vllm_config, rpc_rank=rank)
-        # TODO: move `init_worker` to executor level as a collective rpc call
-        all_kwargs: list[dict] = [
+        self.all_kwargs: list[dict] = [
             {} for _ in range(vllm_config.parallel_config.world_size)
         ]
-        is_driver_worker = (
-            rank % vllm_config.parallel_config.tensor_parallel_size == 0)
-        all_kwargs[rank] = {
-            "vllm_config": vllm_config,
+        self.all_kwargs[rank] = {
             "local_rank": local_rank,
-            "rank": rank,
             "distributed_init_method": distributed_init_method,
-            "is_driver_worker": is_driver_worker,
         }
-        wrapper.init_worker(all_kwargs)
-        self.worker = wrapper
-
-        pp_size = vllm_config.parallel_config.pipeline_parallel_size
-        tp_size = vllm_config.parallel_config.tensor_parallel_size
-        pp_str = f"PP{rank // tp_size}" if pp_size > 1 else ""
-        tp_str = f"TP{rank % tp_size}" if tp_size > 1 else ""
-        suffix = f"{pp_str}{'_' if pp_str and tp_str else ''}{tp_str}"
-        process_name = "VllmWorker"
-        if suffix:
-            set_process_title(suffix, append=True)
-            process_name = f"{process_name} {suffix}"
-        decorate_logs(process_name)
-
         # Initialize MessageQueue for receiving SchedulerOutput
         self.rpc_broadcast_mq = MessageQueue.create_from_handle(
             input_shm_handle, self.worker.rank)
 
         # Initializes a message queue for sending the model output
         self.worker_response_mq = MessageQueue(1, 1)
-
-        # Initialize device and loads weights
-        self.worker.init_device()
-        self.worker.load_model()
 
     @staticmethod
     def make_worker_process(
@@ -426,6 +460,7 @@ class WorkerProc:
         # Create death pipe to detect parent process exit
         death_reader, death_writer = context.Pipe(duplex=False)
 
+        # create pipe to update the vllm_config later
         vllm_config_reader, vllm_config_writer = context.Pipe(duplex=False)
 
         process_kwargs = {
@@ -451,13 +486,20 @@ class WorkerProc:
         return UnreadyWorkerProcHandle(proc, rank, reader, death_writer, vllm_config_writer)
 
     @staticmethod
-    def update_vllm_config(
-        proc_handles: list[WorkerProcHandle], vllm_config: VllmConfig
+    def hold(
+        proc_handles: list[WorkerProcHandle], vllm_config: VllmConfig, updated_ranks: list, engineUUID: str
     ) -> list[WorkerProcHandle]:
-        pipes = {handle.vllm_config_writer: handle for handle in proc_handles}
-        for writer, handle in pipes.items():
+        handles_to_update = [
+            h for h in proc_handles if h.rank in updated_ranks]
+
+        for handle in handles_to_update:
+            if handle.engineUUID is not None:
+                raise RuntimeError(
+                    f"Worker {handle.rank} already has engineUUID {handle.engineUUID}. Cannot overwrite."
+                )
             try:
-                writer.send(vllm_config)
+                handle.vllm_config_writer.send(vllm_config)
+                handle.engineUUID = engineUUID
             except (BrokenPipeError, EOFError):
                 logger.error(
                     f"Worker {handle.rank} is not available for config update")
@@ -465,10 +507,53 @@ class WorkerProc:
         return proc_handles
 
     @staticmethod
-    def update_process_vllm_config(
-        vllm_config: VllmConfig
-    ) -> None:
+    def unhold(
+        proc_handles: list[WorkerProcHandle], updated_ranks: list
+    ) -> list[WorkerProcHandle]:
+        handles_to_update = [
+            h for h in proc_handles if h.rank in updated_ranks]
+
+        for handle in handles_to_update:
+            handle.engineUUID = None
+
+        return proc_handles
+
+    @staticmethod
+    def load_model(self):
+        self.worker.load_model()
+
+    @staticmethod
+    def unload_model(self):
+        self.worker.unload_model()
+
+    @staticmethod
+    def update_process_vllm_config(self,
+                                   vllm_config: VllmConfig, rank: int,
+                                   ) -> None:
         # change the vllmConfig
+        self.rank = rank
+        wrapper = WorkerWrapperBase(vllm_config=vllm_config, rpc_rank=rank)
+
+        is_driver_worker = (
+            rank % vllm_config.parallel_config.tensor_parallel_size == 0)
+        self.all_kwargs[rank]["vllm_config"] = vllm_config
+        self.all_kwargs[rank]["rank"] = rank
+        self.all_kwargs[rank]["is_driver_worker"] = is_driver_worker
+
+        wrapper.init_worker(self.all_kwargs)
+        self.worker = wrapper
+
+        pp_size = vllm_config.parallel_config.pipeline_parallel_size
+        tp_size = vllm_config.parallel_config.tensor_parallel_size
+        pp_str = f"PP{rank // tp_size}" if pp_size > 1 else ""
+        tp_str = f"TP{rank % tp_size}" if tp_size > 1 else ""
+        suffix = f"{pp_str}{'_' if pp_str and tp_str else ''}{tp_str}"
+        process_name = "VllmWorker"
+        if suffix:
+            set_process_title(suffix, append=True)
+            process_name = f"{process_name} {suffix}"
+        decorate_logs(process_name)
+        self.worker.init_device()
 
     @staticmethod
     def wait_for_ready(
