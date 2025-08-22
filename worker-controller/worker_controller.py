@@ -39,7 +39,7 @@ from vllm.worker.worker_base import WorkerWrapperBase
 logger = init_logger(__name__)
 
 
-class WorkerController(Executor):
+class MultiprocExecutor(Executor):
 
     def _init_executor(self) -> None:
         # Call self.shutdown at exit to clean up
