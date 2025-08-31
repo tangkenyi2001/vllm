@@ -3,7 +3,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from worker_controller import WorkerController
-from vllm.config import VllmConfig, ParallelConfig
+from vllm_config import DummyModelConfig, DummyVllmConfig, CacheConfig, ParallelConfig
+from vllm.config import VllmConfig
 import logging
 import threading
 import time
@@ -31,18 +32,6 @@ class WorkerStatusResponse(BaseModel):
 app = FastAPI(title="Worker Controller API")
 # Initialize WorkerController with lazy loading
 worker_controller = None
-controller_ready = threading.Event()
-controller_error = None
-
-
-def wait_for_controller():
-    """Wait for controller to be ready, raise error if failed."""
-    if not controller_ready.wait(timeout=30):
-        raise HTTPException(
-            status_code=503, detail="Worker controller initialization timeout")
-    if controller_error:
-        raise HTTPException(
-            status_code=500, detail=f"Worker controller failed: {controller_error}")
 
 
 @app.get("/")
@@ -53,7 +42,6 @@ def read_root():
 @app.post("/engines")
 def create_engine(request: EngineCreateRequest):
     """Create a new engine by assigning workers and loading vllm_config."""
-    wait_for_controller()
     try:
         # Convert dict to VllmConfig object if needed
         vllm_config = request.vllm_config if isinstance(
@@ -76,7 +64,6 @@ def create_engine(request: EngineCreateRequest):
 @app.delete("/engines/{engine_uuid}")
 def delete_engine(engine_uuid: str):
     """Delete an engine and reset its workers to empty state."""
-    wait_for_controller()
     try:
         worker_controller.delete(engine_uuid)
         return {
@@ -91,7 +78,6 @@ def delete_engine(engine_uuid: str):
 @app.get("/workers/status", response_model=WorkerStatusResponse)
 def get_worker_status():
     """Get current worker and engine status."""
-    wait_for_controller()
     return WorkerStatusResponse(
         available_workers=worker_controller.available_workers,
         total_workers=worker_controller.world_size,
@@ -109,7 +95,6 @@ def get_worker_status():
 @app.post("/engines/{engine_uuid}/execute")
 def execute_model(engine_uuid: str, request: EngineExecuteRequest):
     """Execute model on the specified engine."""
-    wait_for_controller()
     try:
         if engine_uuid not in worker_controller.engines:
             raise HTTPException(
@@ -145,7 +130,6 @@ def list_engines():
 @app.get("/engines/{engine_uuid}")
 def get_engine_info(engine_uuid: str):
     """Get information about a specific engine."""
-    wait_for_controller()
     if engine_uuid not in worker_controller.engines:
         raise HTTPException(
             status_code=404, detail=f"Engine {engine_uuid} not found")
@@ -169,19 +153,31 @@ def init_worker_controller():
         worker_controller = WorkerController(number_of_gpus=2)
         logger.info(
             f"WorkerController initialized with {worker_controller.world_size} workers")
-        controller_ready.set()
     except Exception as e:
         logger.error(f"Failed to initialize WorkerController: {e}")
         controller_error = str(e)
-        controller_ready.set()
 
 
 if __name__ == "__main__":
-
+    logging.basicConfig(
+        level=logging.INFO,   # Show INFO and above
+        format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
     # parallelConfig = ParallelConfig(world_size=3)
     # print(parallelConfig)
-    worker_controller = WorkerController(number_of_gpus=3)
-    print(worker_controller)
+    modelConfig = DummyModelConfig("dummy", enforce_eager=True)
+    cacheConfig = CacheConfig(gpu_memory_utilization=0.9)
+    parallelConfig = ParallelConfig(
+        world_size=2, worker_cls='vllm.v1.worker.gpu_worker.Worker')
+    # parallelConfig = ParallelConfig(
+    #     world_size=2)
+    dummyvllmConfig = DummyVllmConfig(
+        model_config=modelConfig, cache_config=cacheConfig, parallel_config=parallelConfig)
+    worker_controller = WorkerController(vllm_config=dummyvllmConfig)
+    logger.info("WorkerController started")
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)
     # logging.basicConfig(level=logging.INFO)
     # logger.info("Starting FastAPI server...")
 

@@ -43,8 +43,23 @@ if TYPE_CHECKING:
 class Worker(WorkerBase):
 
     def __init__(
-        self
+        self,
+        vllm_config: VllmConfig,
+        local_rank: int,
+        rank: int,
+        distributed_init_method: str,
+        is_driver_worker: bool = False,
     ):
+        super().__init__(vllm_config=vllm_config,
+                         local_rank=local_rank,
+                         rank=rank,
+                         distributed_init_method=distributed_init_method,
+                         is_driver_worker=is_driver_worker)
+
+        if self.model_config.trust_remote_code:
+            # note: lazy import to avoid importing torch before initializing
+            from vllm.utils import init_cached_hf_modules
+            init_cached_hf_modules()
         # Buffers saved before sleep
         self._sleep_saved_buffers: dict[str, torch.Tensor] = {}
         # Torch profiler. Enabled and configured through env vars:
