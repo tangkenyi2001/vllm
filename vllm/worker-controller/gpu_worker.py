@@ -179,7 +179,7 @@ class Worker(WorkerBase):
             self.device = torch.device(f"cuda:{self.local_rank}")
             current_platform.set_device(self.device)
 
-            _check_if_gpu_supports_dtype(self.model_config.dtype)
+            current_platform.check_if_supports_dtype(self.model_config.dtype)
             gc.collect()
             torch.cuda.empty_cache()
 
@@ -601,3 +601,23 @@ class Worker(WorkerBase):
     ) -> None:
         self.model_runner.save_tensorized_model(
             tensorizer_config=tensorizer_config, )
+
+
+def init_worker_distributed_environment(
+    vllm_config: VllmConfig,
+    rank: int,
+    distributed_init_method: Optional[str] = None,
+    local_rank: int = -1,
+    backend: str = "nccl",
+) -> None:
+    """Initialize the distributed environment."""
+    parallel_config = vllm_config.parallel_config
+    set_custom_all_reduce(not parallel_config.disable_custom_all_reduce)
+
+    init_distributed_environment(parallel_config.world_size, rank,
+                                 distributed_init_method, local_rank, backend)
+
+    ensure_model_parallel_initialized(parallel_config.tensor_parallel_size,
+                                      parallel_config.pipeline_parallel_size)
+
+    ensure_kv_transfer_initialized(vllm_config)

@@ -38,7 +38,7 @@ from vllm.utils import (decorate_logs, get_distributed_init_method,
 from vllm.v1.executor.abstract import FailureCallback
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.worker.worker_base import WorkerWrapperBase
-
+from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
 from vllm_config import DummyModelConfig, DummyVllmConfig, CacheConfig, ParallelConfig
 
 logger = init_logger(__name__)
@@ -106,24 +106,20 @@ class WorkerController:
         self.available_workers = vllm_config.parallel_config.world_size
         self.vllm_config = vllm_config
         # hard code to simulate GPU.
-        vllm_config.parallel_config.worker_cls = "vllm.v1.worker.gpu_worker.Worker"
+        vllm_config.parallel_config.worker_cls = "vllm.worker-controller.gpu_worker.Worker"
 
         self.resource = ResourceAllocator(
             num_resources=vllm_config.parallel_config.world_size)
+
+        set_multiprocessing_worker_envs(vllm_config.parallel_config)
 
         # Track engines and their assigned workers
         # engine_uuid -> {"workers": [ranks], "vllm_config": config}
         self.engines = {}
         # Initialize empty workers with minimal setup
-        self._initialize_workers()
-
-    def _initialize_workers(self):
-        """Initialize worker processes with dummyVLLMConfig only."""
-        # Set multiprocessing envs that are common to V0 and V1
         distributed_init_method = get_distributed_init_method(
             get_loopback_ip(), get_open_port())
 
-        # Initialize message queues for communication
         max_chunk_bytes = envs.VLLM_MQ_MAX_CHUNK_BYTES_MB * 1024 * 1024
         self.rpc_broadcast_mq = MessageQueue(self.world_size,
                                              self.world_size,
@@ -133,8 +129,6 @@ class WorkerController:
         # Create empty workers (no model loading)
         unready_workers: list[UnreadyWorkerProcHandle] = []
         success = False
-
-        # Create dummyVLLMConfig
 
         try:
             for rank in range(self.world_size):
@@ -167,6 +161,19 @@ class WorkerController:
                         uw.death_writer.close()
                 self._ensure_worker_termination(
                     [uw.proc for uw in unready_workers])
+
+        if self.max_concurrent_batches > 1:
+            # Note: must use only 1 IO thread to keep dequeue sequence
+            # from the response queue
+            # _async_aggregate_workers_output also assumes a single IO thread
+            self.io_thread_pool = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="mp_exec_io")
+
+        self.parallel_config = self.vllm_config.parallel_config
+        self.output_rank = self._get_output_rank()
+        self.has_connector = self.vllm_config.kv_transfer_config is not None
+        self.kv_output_aggregator = KVOutputAggregator(
+            self.parallel_config.world_size)
 
     def _configure_workers(self, worker_ranks: list[int], vllm_config: VllmConfig, engineUUID: str):
         """Send vllm_config to specified workers and wait for them to initialize."""
@@ -232,69 +239,6 @@ class WorkerController:
         logger.info(
             f"Engine {engineUUID} created with workers {assigned_ranks}")
 
-    def delete(self, engineUUID: str):
-        """Delete an engine by releasing and resetting workers."""
-        if engineUUID not in self.engines:
-            raise ValueError(f"Engine {engineUUID} not found")
-
-        # Get assigned workers for this engine
-        assigned_ranks = self.engines[engineUUID]["workers"]
-
-        # Reset workers to empty state
-        self._reset_workers(assigned_ranks)
-
-        # Release resources
-        self.resource.release_by_uuid(engineUUID)
-        self.available_workers = self.resource.num_free()
-
-        # Remove engine tracking
-        del self.engines[engineUUID]
-
-        logger.info(
-            f"Engine {engineUUID} deleted and workers {assigned_ranks} reset")
-
-    def execute_model_for_engine(self, engine_uuid: str, scheduler_output):
-        """Execute model on workers assigned to a specific engine."""
-        if engine_uuid not in self.engines:
-            raise ValueError(f"Engine {engine_uuid} not found")
-
-        engine_info = self.engines[engine_uuid]
-        assigned_ranks = engine_info["workers"]
-        vllm_config = engine_info["vllm_config"]
-
-        # Filter workers for this engine
-        engine_workers = [w for w in self.workers if w.rank in assigned_ranks]
-
-        # Execute model using only the assigned workers
-        # This is a simplified version - you may need to adapt based on your specific requirements
-        output_rank = self._get_output_rank(vllm_config)
-
-        # Send execution request to assigned workers
-        responses = []
-        for worker in engine_workers:
-            if worker.engineUUID == engine_uuid:
-                # Send the scheduler output to this worker
-                # This is simplified - you'd need proper message queue handling
-                response = self._execute_on_worker(worker, scheduler_output)
-                if worker.rank == output_rank:
-                    responses.append(response)
-
-        return responses[0] if responses else None
-
-    def _execute_on_worker(self, worker: 'WorkerProcHandle', scheduler_output):
-        """Execute model on a specific worker."""
-        # This is a placeholder - implement actual execution logic
-        # You'd typically use the message queue system here
-        try:
-            # Send execution request via message queue
-            # worker.worker_response_mq.enqueue(scheduler_output)
-            # response = worker.worker_response_mq.dequeue(...)
-            _ = scheduler_output  # Mark as used for now
-            return {"status": "success", "worker_rank": worker.rank}
-        except Exception as e:
-            logger.error(f"Execution failed on worker {worker.rank}: {e}")
-            raise
-
     def start_worker_monitor(self):
         workers = self.workers
         self_ref = weakref.ref(self)
@@ -358,6 +302,12 @@ class WorkerController:
             return self.kv_output_aggregator.async_aggregate(
                 outputs, self.output_rank)
         return self.kv_output_aggregator.aggregate(outputs, self.output_rank)
+
+    def take_draft_token_ids(self) -> Optional[DraftTokenIds]:
+        # OPTIMIZATION: Get output only from a single worker (output_rank)
+        outputs = self.collective_rpc("take_draft_token_ids",
+                                      unique_reply_rank=self.output_rank)
+        return outputs[0]
 
     def collective_rpc(self,
                        method: Union[str, Callable],
@@ -467,11 +417,7 @@ class WorkerController:
 
     def check_health(self) -> None:
         """Check health of all workers."""
-        try:
-            self.collective_rpc("check_health", timeout=10)
-        except Exception as e:
-            logger.error(f"Health check failed: {e}")
-            raise
+        self.collective_rpc("check_health", timeout=10)
         return
 
     @property
@@ -480,12 +426,17 @@ class WorkerController:
         # This will be overridden when engines are created
         return 1
 
-    def _get_output_rank(self, vllm_config: VllmConfig = None) -> int:
+    def _get_output_rank(self) -> int:
         # Only returns ModelRunnerOutput from TP rank=0 and PP rank=-1
         # (the first TP worker of the last PP stage).
-        if vllm_config is None:
-            return 0  # Default for empty workers
-        return vllm_config.parallel_config.world_size - vllm_config.parallel_config.tensor_parallel_size
+        # Example:
+        # Assuming TP=8, PP=4, then the world_size=32
+        # 0-7, PP rank 0
+        # 8-15, PP rank 1
+        # 16-23, PP rank 2
+        # 24-31, PP rank 3
+        # so world_size - tp_size = 32 - 8 = 24 should be PP rank = -1 (i.e. 3)
+        return self.world_size - self.parallel_config.tensor_parallel_size
 
 
 @dataclass
@@ -536,11 +487,9 @@ class WorkerProc:
 
         self.rank = rank
         wrapper = WorkerWrapperBase(vllm_config=vllm_config, rpc_rank=rank)
-        self.worker = wrapper
         all_kwargs: list[dict] = [
             {} for _ in range(vllm_config.parallel_config.world_size)
         ]
-
         is_driver_worker = (
             rank % vllm_config.parallel_config.tensor_parallel_size == 0)
         all_kwargs[rank] = {
@@ -550,58 +499,18 @@ class WorkerProc:
             "distributed_init_method": distributed_init_method,
             "is_driver_worker": is_driver_worker,
         }
+        wrapper.init_worker(all_kwargs)
+        self.worker = wrapper
+        logger.info(f"wrapper.init_worker {rank} completed")
+        logger.info(wrapper.worker)
+
         # Initialize MessageQueue for receiving SchedulerOutput
         self.rpc_broadcast_mq = MessageQueue.create_from_handle(
             input_shm_handle, rank)
 
         # Initializes a message queue for sending the model output
         self.worker_response_mq = MessageQueue(1, 1)
-        # Now run wrapper
-        wrapper.init_worker(all_kwargs)
-        logger.info(f"wrapper.init_worker {rank} completed")
-        logger.info(wrapper.worker)
-
-    @staticmethod
-    def make_empty_worker_process(
-            self,
-            local_rank: int,
-            rank: int,
-            distributed_init_method: str,
-            input_shm_handle,  # Receive SchedulerOutput
-    ) -> UnreadyWorkerProcHandle:
-        """Create an empty worker process without vllm_config."""
-        context = get_mp_context()
-        # (reader, writer)
-        reader, writer = context.Pipe(duplex=False)
-
-        # Create death pipe to detect parent process exit
-        death_reader, death_writer = context.Pipe(duplex=False)
-
-        # create pipe to update the vllm_config later
-        vllm_config_reader, vllm_config_writer = context.Pipe(duplex=False)
-
-        process_kwargs = {
-            "vllm_config": None,  # Start without config
-            "is_driver_worker": None,  # Start without config
-            "local_rank": local_rank,
-            "rank": rank,
-            "distributed_init_method": distributed_init_method,
-            "input_shm_handle": input_shm_handle,
-            "ready_pipe": (reader, writer),
-            "death_pipe": death_reader,
-            "vllm_config_pipe": vllm_config_reader,
-        }
-        # Run EngineCore busy loop in background process.
-        proc = context.Process(target=WorkerProc.worker_main,
-                               kwargs=process_kwargs,
-                               name=f"VllmWorker-{rank}",
-                               daemon=True)
-
-        proc.start()
-        writer.close()
-        # Keep death_writer open in parent - when parent exits,
-        # death_reader in child will get EOFError
-        return UnreadyWorkerProcHandle(proc, rank, reader, vllm_config_writer, death_writer)
+        self.worker.init_device()
 
     @staticmethod
     def make_worker_process(
@@ -827,7 +736,7 @@ class WorkerProc:
                     "Config monitor thread started, waiting for configs...")
                 try:
                     while True:
-                        logger.info("thread polling")
+                        logger.info(f"Worker {os.getpid()} thread polling")
                         if vllm_config_pipe.poll(timeout=1.0):
                             new_cfg = vllm_config_pipe.recv()
                             logger.info("recv logs")
