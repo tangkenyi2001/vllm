@@ -106,7 +106,7 @@ class WorkerController:
         self.available_workers = vllm_config.parallel_config.world_size
         self.vllm_config = vllm_config
         # hard code to simulate GPU.
-        vllm_config.parallel_config.worker_cls = "vllm.worker-controller.gpu_worker.Worker"
+        # vllm_config.parallel_config.worker_cls = "vllm.worker-controller.gpu_worker.Worker"
 
         self.resource = ResourceAllocator(
             num_resources=vllm_config.parallel_config.world_size)

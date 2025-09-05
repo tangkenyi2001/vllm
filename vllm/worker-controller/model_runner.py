@@ -103,7 +103,7 @@ else:
 logger = init_logger(__name__)
 
 
-class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+class RefactoredGPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
     def __init__(
         self,
@@ -139,8 +139,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 cache_config.cache_dtype]
 
         self.is_pooling_model = model_config.pooler_config is not None
-        self.is_multimodal_raw_input_supported = (
-            model_config.is_multimodal_raw_input_supported)
+        # move to load model
+        # self.is_multimodal_raw_input_supported = (
+        #     model_config.is_multimodal_raw_input_supported)
         self.max_model_len = model_config.max_model_len
         self.max_num_tokens = scheduler_config.max_num_batched_tokens
         self.max_num_reqs = scheduler_config.max_num_seqs
@@ -1927,6 +1928,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             eep_scale_up: the model loading is for elastic EP scale up.
         """
         logger.info("Starting to load model %s...", self.model_config.model)
+        # load configs first this was moved from the __init__
+        self.is_multimodal_raw_input_supported = (
+            self.model_config.is_multimodal_raw_input_supported)
+
         if eep_scale_up:
             from vllm.distributed.parallel_state import get_ep_group
             num_local_physical_experts = torch.empty(1,

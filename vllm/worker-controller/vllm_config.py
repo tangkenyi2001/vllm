@@ -698,6 +698,7 @@ class DummyModelConfig:
         #     msg = f"{msg_prefix} {msg_hint}"
         #     warnings.warn(msg, DeprecationWarning, stacklevel=2)
 
+        self.runner_type=None
         # self.runner_type = self._get_runner_type(architectures, self.runner)
         # self.convert_type = self._get_convert_type(architectures,
         #                                            self.runner_type,
@@ -4717,6 +4718,7 @@ class DummyVllmConfig:
 
         self.try_verify_and_update_config()
 
+        
         if self.model_config is not None:
             self.model_config.verify_async_output_proc(self.parallel_config,
                                                        self.speculative_config,
