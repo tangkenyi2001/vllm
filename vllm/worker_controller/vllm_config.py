@@ -43,6 +43,7 @@ from vllm.transformers_utils.config import (
     try_get_safetensors_metadata, try_get_tokenizer_config, uses_mrope)
 from vllm.transformers_utils.s3_utils import S3Model
 from vllm.transformers_utils.utils import is_s3, maybe_model_redirect
+from vllm.v1.sample.logits_processor import LogitsProcessor
 # yapf conflicts with isort for this block
 # yapf: disable
 from vllm.utils import (DEFAULT_MAX_NUM_BATCHED_TOKENS,
@@ -482,6 +483,9 @@ class DummyModelConfig:
     - "transformers" will use the Transformers model implementation."""
     override_attention_dtype: Optional[str] = None
     """Override dtype for attention"""
+    logits_processors: Optional[list[Union[str, type[LogitsProcessor]]]] = None
+    """One or more logits processors' fully-qualified class names or class
+    definitions"""
 
     def compute_hash(self) -> str:
         """
@@ -587,7 +591,7 @@ class DummyModelConfig:
         self.maybe_pull_model_tokenizer_for_s3(self.model, self.tokenizer)
 
         if (backend := envs.VLLM_ATTENTION_BACKEND
-                ) and backend == "FLASHINFER" and find_spec("flashinfer") is None:
+            ) and backend == "FLASHINFER" and find_spec("flashinfer") is None:
             raise ValueError(
                 "VLLM_ATTENTION_BACKEND is set to FLASHINFER, but flashinfer "
                 "module was not found. See "
@@ -698,7 +702,7 @@ class DummyModelConfig:
         #     msg = f"{msg_prefix} {msg_hint}"
         #     warnings.warn(msg, DeprecationWarning, stacklevel=2)
 
-        self.runner_type=None
+        self.runner_type = None
         # self.runner_type = self._get_runner_type(architectures, self.runner)
         # self.convert_type = self._get_convert_type(architectures,
         #                                            self.runner_type,
@@ -4718,7 +4722,6 @@ class DummyVllmConfig:
 
         self.try_verify_and_update_config()
 
-        
         if self.model_config is not None:
             self.model_config.verify_async_output_proc(self.parallel_config,
                                                        self.speculative_config,

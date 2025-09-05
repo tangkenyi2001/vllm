@@ -32,7 +32,8 @@ from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT, ModelRunnerOutput
 from vllm.v1.utils import report_usage_stats
 # from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.worker_base import WorkerBase
-from model_runner import RefactoredGPUModelRunner
+from vllm.worker_controller.model_runner import RefactoredGPUModelRunner
+
 logger = init_logger(__name__)
 
 if TYPE_CHECKING:
@@ -216,13 +217,19 @@ class Worker(WorkerBase):
         self.model_runner: RefactoredGPUModelRunner = RefactoredGPUModelRunner(
             self.vllm_config, self.device)
 
-        if self.rank == 0:
-            # If usage stat is enabled, collect relevant info.
-            report_usage_stats(self.vllm_config)
+        logger.info(
+            f"PID {os.getpid()} The Model Runner has been set up{self.model_runner}")
+        logger.info(f"PID {os.getpid()} The Model Runner is completely empty ")
+        # report_usage_stats requires hf.architecture
+        # if self.rank == 0:
+        #     # If usage stat is enabled, collect relevant info.
+        #     report_usage_stats(self.vllm_config)
 
     # FIXME(youkaichao & ywang96): Use TorchDispatchMode instead of memory pool
     # to hijack tensor allocation.
+
     def load_model(self) -> None:
+
         eep_scale_up = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
         with self._maybe_get_memory_pool_context(tag="weights"):
             self.model_runner.load_model(eep_scale_up=eep_scale_up)

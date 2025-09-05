@@ -169,7 +169,7 @@ if __name__ == "__main__":
     modelConfig = DummyModelConfig("dummy", enforce_eager=True)
     cacheConfig = CacheConfig(gpu_memory_utilization=0.9)
     parallelConfig = ParallelConfig(
-        world_size=2, worker_cls='vllm.worker-controller.gpu_worker.Worker')
+        world_size=2, worker_cls='vllm.worker_controller.gpu_worker.Worker')
     # parallelConfig = ParallelConfig(
     #     world_size=2)
     dummyvllmConfig = DummyVllmConfig(

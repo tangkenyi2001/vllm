@@ -83,10 +83,10 @@ from vllm.v1.worker.kv_connector_model_runner_mixin import (
     KVConnectorModelRunnerMixin, KVConnectorOutput)
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
 
-from .utils import (AttentionGroup, CpuGpuBuffer, MultiModalBudget,
-                    bind_kv_cache, gather_mm_placeholders,
-                    initialize_kv_cache_for_kv_sharing,
-                    sanity_check_mm_encoder_outputs, scatter_mm_placeholders)
+from vllm.v1.worker.utils import (AttentionGroup, CpuGpuBuffer, MultiModalBudget,
+                                  bind_kv_cache, gather_mm_placeholders,
+                                  initialize_kv_cache_for_kv_sharing,
+                                  sanity_check_mm_encoder_outputs, scatter_mm_placeholders)
 
 if TYPE_CHECKING:
     import xgrammar as xgr
@@ -142,7 +142,7 @@ class RefactoredGPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin
         # move to load model
         # self.is_multimodal_raw_input_supported = (
         #     model_config.is_multimodal_raw_input_supported)
-        self.max_model_len = model_config.max_model_len
+        # self.max_model_len = model_config.max_model_len
         self.max_num_tokens = scheduler_config.max_num_batched_tokens
         self.max_num_reqs = scheduler_config.max_num_seqs
 
@@ -157,10 +157,10 @@ class RefactoredGPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin
         self.cascade_attn_enabled = not self.model_config.disable_cascade_attn
 
         # Multi-modal data support
-        self.mm_registry = MULTIMODAL_REGISTRY
-        self.uses_mrope = model_config.uses_mrope
-        self.supports_mm_inputs = self.mm_registry.supports_multimodal_inputs(
-            model_config)
+        # self.mm_registry = MULTIMODAL_REGISTRY
+        # self.uses_mrope = model_config.uses_mrope
+        # self.supports_mm_inputs = self.mm_registry.supports_multimodal_inputs(
+        #     model_config)
 
         # Sampler
         self.sampler = Sampler(logprobs_mode=self.model_config.logprobs_mode)
@@ -217,21 +217,21 @@ class RefactoredGPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin
         # solution, we initialize the input batch here, and re-initialize it
         # in `initialize_kv_cache` if the block_sizes here is different from
         # the block_sizes in the kv cache config.
-        self.input_batch = InputBatch(
-            max_num_reqs=self.max_num_reqs,
-            max_model_len=self.max_model_len,
-            max_num_batched_tokens=self.max_num_tokens,
-            device=self.device,
-            pin_memory=self.pin_memory,
-            vocab_size=self.model_config.get_vocab_size(),
-            block_sizes=[self.cache_config.block_size],
-            is_spec_decode=bool(self.vllm_config.speculative_config),
-            logitsprocs=build_logitsprocs(
-                self.vllm_config, self.device, self.pin_memory,
-                self.is_pooling_model,
-                self.vllm_config.model_config.logits_processors),
-            is_pooling_model=self.is_pooling_model,
-        )
+        # self.input_batch = InputBatch(
+        #     max_num_reqs=self.max_num_reqs,
+        #     max_model_len=self.max_model_len,
+        #     max_num_batched_tokens=self.max_num_tokens,
+        #     device=self.device,
+        #     pin_memory=self.pin_memory,
+        #     vocab_size=self.model_config.get_vocab_size(),
+        #     block_sizes=[self.cache_config.block_size],
+        #     is_spec_decode=bool(self.vllm_config.speculative_config),
+        #     logitsprocs=build_logitsprocs(
+        #         self.vllm_config, self.device, self.pin_memory,
+        #         self.is_pooling_model,
+        #         self.vllm_config.model_config.logits_processors),
+        #     is_pooling_model=self.is_pooling_model,
+        # )
 
         # TODO(woosuk): Provide an option to tune the max cudagraph batch size.
         # The convention is different.
@@ -246,42 +246,43 @@ class RefactoredGPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin
         self._init_device_properties()
 
         # Persistent buffers for CUDA graphs.
-        self.input_ids = self._make_buffer(self.max_num_tokens,
-                                           dtype=torch.int32)
-        self.positions = self._make_buffer(self.max_num_tokens,
-                                           dtype=torch.int64)
-        self.query_start_loc = self._make_buffer(self.max_num_reqs + 1,
-                                                 dtype=torch.int32)
-        self.seq_lens = self._make_buffer(self.max_num_reqs, dtype=torch.int32)
-        self.inputs_embeds = torch.zeros(
-            (self.max_num_tokens, self.hidden_size),
-            dtype=self.dtype,
-            device=self.device)
+        # self.input_ids = self._make_buffer(self.max_num_tokens,
+        #                                    dtype=torch.int32)
+        # self.positions = self._make_buffer(self.max_num_tokens,
+        #                                    dtype=torch.int64)
+        # self.query_start_loc = self._make_buffer(self.max_num_reqs + 1,
+        #                                          dtype=torch.int32)
+        # self.seq_lens = self._make_buffer(self.max_num_reqs, dtype=torch.int32)
+        # self.inputs_embeds = torch.zeros(
+        #     (self.max_num_tokens, self.hidden_size),
+        #     dtype=self.dtype,
+        #     device=self.device)
 
         # Only relevant for models using M-RoPE (e.g, Qwen2-VL)
-        if self.uses_mrope:
-            # NOTE: `mrope_positions` is implemented with one additional dummy
-            # position on purpose to make it non-contiguous so that it can work
-            # with torch compile.
-            # See detailed explanation in https://github.com/vllm-project/vllm/pull/12128#discussion_r1926431923
+        # if self.uses_mrope:
+        #     # NOTE: `mrope_positions` is implemented with one additional dummy
+        #     # position on purpose to make it non-contiguous so that it can work
+        #     # with torch compile.
+        #     # See detailed explanation in https://github.com/vllm-project/vllm/pull/12128#discussion_r1926431923
 
-            # NOTE: When M-RoPE is enabled, position ids are 3D regardless of
-            # the modality of inputs. For text-only inputs, each dimension has
-            # identical position IDs, making M-RoPE functionally equivalent to
-            # 1D-RoPE.
-            # See page 5 of https://arxiv.org/abs/2409.12191
-            self.mrope_positions = self._make_buffer(
-                (3, self.max_num_tokens + 1), dtype=torch.int64)
+        #     # NOTE: When M-RoPE is enabled, position ids are 3D regardless of
+        #     # the modality of inputs. For text-only inputs, each dimension has
+        #     # identical position IDs, making M-RoPE functionally equivalent to
+        #     # 1D-RoPE.
+        #     # See page 5 of https://arxiv.org/abs/2409.12191
+        #     self.mrope_positions = self._make_buffer(
+        #         (3, self.max_num_tokens + 1), dtype=torch.int64)
 
         # None in the first PP rank. The rest are set after load_model.
         self.intermediate_tensors: Optional[IntermediateTensors] = None
 
         # OPTIMIZATION: Cache the tensors rather than creating them every step.
         # Keep in int64 to avoid overflow with long context
-        self.arange_np = np.arange(max(self.max_num_reqs + 1,
-                                       self.max_model_len,
-                                       self.max_num_tokens),
-                                   dtype=np.int64)
+        # move to load model, must check hugging face for max_model_len first.
+        # self.arange_np = np.arange(max(self.max_num_reqs + 1,
+        #                                self.max_model_len,
+        #                                self.max_num_tokens),
+        #                            dtype=np.int64)
 
         # Layer pairings for cross-layer KV sharing.
         # If an Attention layer `layer_name` is in the keys of this dict, it
@@ -299,13 +300,13 @@ class RefactoredGPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin
             1 + self.speculative_config.num_speculative_tokens
 
         # Cudagraph dispatcher for runtime cudagraph dispatching.
-        self.cudagraph_dispatcher = CudagraphDispatcher(self.vllm_config)
+        # self.cudagraph_dispatcher = CudagraphDispatcher(self.vllm_config)
 
-        self.mm_budget = (MultiModalBudget(
-            self.model_config,
-            self.scheduler_config,
-            self.mm_registry,
-        ) if self.supports_mm_inputs else None)
+        # self.mm_budget = (MultiModalBudget(
+        #     self.model_config,
+        #     self.scheduler_config,
+        #     self.mm_registry,
+        # ) if self.supports_mm_inputs else None)
 
         self.reorder_batch_threshold: Optional[int] = None
 
@@ -318,11 +319,11 @@ class RefactoredGPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin
         self._draft_token_ids: Optional[Union[list[list[int]],
                                               torch.Tensor]] = None
         self.transfer_event = torch.cuda.Event()
-        self.sampled_token_ids_pinned_cpu = torch.empty(
-            (self.max_model_len, 1),
-            dtype=torch.int64,
-            device="cpu",
-            pin_memory=True)
+        # self.sampled_token_ids_pinned_cpu = torch.empty(
+        #     (self.max_model_len, 1),
+        #     dtype=torch.int64,
+        #     device="cpu",
+        #     pin_memory=True)
 
     def _make_buffer(self, *args, dtype: torch.dtype) -> CpuGpuBuffer:
         return CpuGpuBuffer(*args,
@@ -1931,6 +1932,85 @@ class RefactoredGPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin
         # load configs first this was moved from the __init__
         self.is_multimodal_raw_input_supported = (
             self.model_config.is_multimodal_raw_input_supported)
+
+        self.mm_registry = MULTIMODAL_REGISTRY
+        self.uses_mrope = self.model_config.uses_mrope
+        self.supports_mm_inputs = self.mm_registry.supports_multimodal_inputs(
+            self.model_config)
+
+        # Input Batch
+        # NOTE(Chen): Ideally, we should initialize the input batch inside
+        # `initialize_kv_cache` based on the kv cache config. However, as in
+        # https://github.com/vllm-project/vllm/pull/18298, due to some unknown
+        # reasons, we have to initialize the input batch before `load_model`,
+        # quantization + weight offloading will fail otherwise. As a temporary
+        # solution, we initialize the input batch here, and re-initialize it
+        # in `initialize_kv_cache` if the block_sizes here is different from
+        # the block_sizes in the kv cache config.
+        model_config = self.vllm_config.model_config
+        # check the model_config max length here, it should be configured after the hf check
+        self.max_model_len = model_config.max_model_len
+
+        self.input_batch = InputBatch(
+            max_num_reqs=self.max_num_reqs,
+            max_model_len=self.max_model_len,
+            max_num_batched_tokens=self.max_num_tokens,
+            device=self.device,
+            pin_memory=self.pin_memory,
+            vocab_size=self.model_config.get_vocab_size(),
+            block_sizes=[self.cache_config.block_size],
+            is_spec_decode=bool(self.vllm_config.speculative_config),
+            logitsprocs=build_logitsprocs(
+                self.vllm_config, self.device, self.pin_memory,
+                self.is_pooling_model,
+                self.vllm_config.model_config.logits_processors),
+            is_pooling_model=self.is_pooling_model,
+        )
+
+        self.input_ids = self._make_buffer(self.max_num_tokens,
+                                           dtype=torch.int32)
+        self.positions = self._make_buffer(self.max_num_tokens,
+                                           dtype=torch.int64)
+        self.query_start_loc = self._make_buffer(self.max_num_reqs + 1,
+                                                 dtype=torch.int32)
+        self.seq_lens = self._make_buffer(self.max_num_reqs, dtype=torch.int32)
+        # self.dtype requires hf_config
+        self.inputs_embeds = torch.zeros(
+            (self.max_num_tokens, self.hidden_size),
+            dtype=self.dtype,
+            device=self.device)
+
+        if self.uses_mrope:
+            # NOTE: `mrope_positions` is implemented with one additional dummy
+            # position on purpose to make it non-contiguous so that it can work
+            # with torch compile.
+            # See detailed explanation in https://github.com/vllm-project/vllm/pull/12128#discussion_r1926431923
+
+            # NOTE: When M-RoPE is enabled, position ids are 3D regardless of
+            # the modality of inputs. For text-only inputs, each dimension has
+            # identical position IDs, making M-RoPE functionally equivalent to
+            # 1D-RoPE.
+            # See page 5 of https://arxiv.org/abs/2409.12191
+            self.mrope_positions = self._make_buffer(
+                (3, self.max_num_tokens + 1), dtype=torch.int64)
+
+        self.arange_np = np.arange(max(self.max_num_reqs + 1,
+                                       self.max_model_len,
+                                       self.max_num_tokens),
+                                   dtype=np.int64)
+        self.cudagraph_dispatcher = CudagraphDispatcher(self.vllm_config)
+
+        self.mm_budget = (MultiModalBudget(
+            self.model_config,
+            self.scheduler_config,
+            self.mm_registry,
+        ) if self.supports_mm_inputs else None)
+
+        self.sampled_token_ids_pinned_cpu = torch.empty(
+            (self.max_model_len, 1),
+            dtype=torch.int64,
+            device="cpu",
+            pin_memory=True)
 
         if eep_scale_up:
             from vllm.distributed.parallel_state import get_ep_group
