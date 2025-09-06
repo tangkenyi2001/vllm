@@ -33,6 +33,7 @@ from vllm.v1.utils import report_usage_stats
 # from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.worker_base import WorkerBase
 from vllm.worker_controller.model_runner import RefactoredGPUModelRunner
+from vllm.worker_controller.vllm_config import DummyVllmConfig
 
 logger = init_logger(__name__)
 
@@ -229,11 +230,14 @@ class Worker(WorkerBase):
     # FIXME(youkaichao & ywang96): Use TorchDispatchMode instead of memory pool
     # to hijack tensor allocation.
 
-    def load_model(self) -> None:
-
-        eep_scale_up = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
-        with self._maybe_get_memory_pool_context(tag="weights"):
-            self.model_runner.load_model(eep_scale_up=eep_scale_up)
+    def load_model(self, vllmconfig: DummyVllmConfig) -> str:
+        logger.info(f"{os.getpid()} LOAD MODEL CALLED")
+        logger.info(f"{vllmconfig}")
+        # eep_scale_up = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
+        # with self._maybe_get_memory_pool_context(tag="weights"):
+        #     self.model_runner.load_model(eep_scale_up=eep_scale_up)
+        res = f"{os.getpid()} Model Loaded"
+        return res
 
     def update_config(self, overrides: dict[str, Any]) -> None:
         self.model_runner.update_config(overrides)

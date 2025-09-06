@@ -189,8 +189,16 @@ class WorkerController:
         assigned_ranks = self.resource.assign(required, engineUUID)
         self.available_workers -= required
 
-        # Configure assigned workers with the vllm_config
-        self._configure_workers(assigned_ranks, vllm_config, engineUUID)
+        result = []
+        # make rpc calls to each assigned worker
+        for worker_rank in assigned_ranks:
+            (output, ) = self.collective_rpc(
+                "load_model",
+                args=(vllm_config, ),
+                unique_reply_rank=worker_rank)
+            result.append(output)
+
+        logger.info(result)
 
         # Store engine info
         self.engines[engineUUID] = {
@@ -721,13 +729,18 @@ class WorkerProc:
             logger.info(
                 f"{os.getpid()} Worker Busy Loop started, self.rpc_broadcast_mq.dequeue is blocking")
             method, args, kwargs, output_rank = self.rpc_broadcast_mq.dequeue()
-
+            logger.info(
+                f"{os.getpid()} Received RPC call")
+            output = None
             try:
                 if isinstance(method, str):
                     func = getattr(self.worker, method)
                 elif isinstance(method, bytes):
                     func = partial(cloudpickle.loads(method), self.worker)
-                output = func(*args, **kwargs)
+
+                # make sure the message is targeted at the specific worker
+                if self.rank == output_rank:
+                    output = func(*args, **kwargs)
             except Exception as e:
                 # Notes have been introduced in python 3.11
                 if hasattr(e, "add_note"):

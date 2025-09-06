@@ -1,0 +1,11 @@
+{
+  "engine_uuid": "123",
+  "vllm_config": {
+    "model_config": {
+        "model":"gpt-4o"
+    },
+    "parallel_config": {
+        "world_size":1
+    }
+  }
+}

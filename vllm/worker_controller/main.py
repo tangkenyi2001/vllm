@@ -45,7 +45,7 @@ def create_engine(request: EngineCreateRequest):
     try:
         # Convert dict to VllmConfig object if needed
         vllm_config = request.vllm_config if isinstance(
-            request.vllm_config, VllmConfig) else VllmConfig(**request.vllm_config)
+            request.vllm_config, DummyVllmConfig) else DummyVllmConfig(**request.vllm_config)
 
         # Create engine: assign workers and load config
         worker_controller.create(vllm_config, request.engine_uuid)
