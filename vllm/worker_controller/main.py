@@ -114,7 +114,6 @@ def execute_model(engine_uuid: str, request: EngineExecuteRequest):
 @app.get("/engines")
 def list_engines():
     """List all active engines."""
-    wait_for_controller()
     return {
         "engines": {
             engine_id: {

@@ -175,44 +175,6 @@ class WorkerController:
         self.kv_output_aggregator = KVOutputAggregator(
             self.parallel_config.world_size)
 
-    def _configure_workers(self, worker_ranks: list[int], vllm_config: VllmConfig, engineUUID: str):
-        """Send vllm_config to specified workers and wait for them to initialize."""
-        handles_to_configure = [
-            h for h in self.workers if h.rank in worker_ranks
-        ]
-
-        for handle in handles_to_configure:
-            if handle.engineUUID is not None:
-                raise RuntimeError(
-                    f"Worker {handle.rank} already assigned to engine {handle.engineUUID}"
-                )
-            try:
-                # Send config to worker via pipe
-                handle.vllm_config_writer.send(vllm_config)
-                handle.engineUUID = engineUUID
-                logger.info(
-                    f"Sent config to worker {handle.rank} for engine {engineUUID}")
-            except (BrokenPipeError, EOFError) as e:
-                logger.error(
-                    f"Failed to send config to worker {handle.rank}: {e}")
-                raise RuntimeError(
-                    f"Worker {handle.rank} not available for configuration")
-
-    def _reset_workers(self, worker_ranks: list[int]):
-        """Reset specified workers back to empty state."""
-        handles_to_reset = [
-            h for h in self.workers if h.rank in worker_ranks
-        ]
-
-        for handle in handles_to_reset:
-            try:
-                # Send reset signal (None config)
-                handle.vllm_config_writer.send(None)
-                handle.engineUUID = None
-                logger.info(f"Reset worker {handle.rank} to empty state")
-            except (BrokenPipeError, EOFError) as e:
-                logger.error(f"Failed to reset worker {handle.rank}: {e}")
-
     def create(self, vllm_config: VllmConfig, engineUUID: str):
         """Create an engine by assigning and configuring workers."""
         required = vllm_config.parallel_config.world_size
@@ -552,79 +514,6 @@ class WorkerProc:
         # death_reader in child will get EOFError
         return UnreadyWorkerProcHandle(proc, rank, reader, death_writer, vllm_config_writer)
 
-    @staticmethod
-    def hold(
-        proc_handles: list[WorkerProcHandle], vllm_config: VllmConfig, updated_ranks: list, engineUUID: str
-    ) -> list[WorkerProcHandle]:
-        handles_to_update = [
-            h for h in proc_handles if h.rank in updated_ranks]
-
-        for handle in handles_to_update:
-            if handle.engineUUID is not None:
-                raise RuntimeError(
-                    f"Worker {handle.rank} already has engineUUID {handle.engineUUID}. Cannot overwrite."
-                )
-            try:
-                handle.vllm_config_writer.send(vllm_config)
-                handle.engineUUID = engineUUID
-            except (BrokenPipeError, EOFError):
-                logger.error(
-                    f"Worker {handle.rank} is not available for config update")
-
-        return proc_handles
-
-    @staticmethod
-    def unhold(
-        proc_handles: list[WorkerProcHandle], updated_ranks: list
-    ) -> list[WorkerProcHandle]:
-        handles_to_update = [
-            h for h in proc_handles if h.rank in updated_ranks]
-
-        for handle in handles_to_update:
-            handle.engineUUID = None
-
-        return proc_handles
-
-    @staticmethod
-    def load_model(self, vllm_config: VllmConfig):
-        """Load model on this worker."""
-        if self.worker is not None:
-            self.worker.load_model()
-
-    def unload_model(self):
-        """Unload model from this worker."""
-        if self.worker is not None:
-            self.worker.unload_model()
-
-    def update_process_vllm_config(self,
-                                   vllm_config: VllmConfig, rank: int,
-                                   ) -> None:
-        """Update this worker process with new vllm_config and initialize model."""
-        # change the vllmConfig
-        self.rank = rank
-        wrapper = WorkerWrapperBase(vllm_config=vllm_config, rpc_rank=rank)
-
-        is_driver_worker = (
-            rank % vllm_config.parallel_config.tensor_parallel_size == 0)
-        self.all_kwargs[rank]["vllm_config"] = vllm_config
-        self.all_kwargs[rank]["rank"] = rank
-        self.all_kwargs[rank]["is_driver_worker"] = is_driver_worker
-
-        wrapper.init_worker(self.all_kwargs)
-        self.worker = wrapper
-
-        pp_size = vllm_config.parallel_config.pipeline_parallel_size
-        tp_size = vllm_config.parallel_config.tensor_parallel_size
-        pp_str = f"PP{rank // tp_size}" if pp_size > 1 else ""
-        tp_str = f"TP{rank % tp_size}" if tp_size > 1 else ""
-        suffix = f"{pp_str}{'_' if pp_str and tp_str else ''}{tp_str}"
-        process_name = "VllmWorker"
-        if suffix:
-            set_process_title(suffix, append=True)
-            process_name = f"{process_name} {suffix}"
-        decorate_logs(process_name)
-        self.worker.init_device()
-
     def reset_to_empty_state(self):
         """Reset this worker to empty state (unload model)."""
         if hasattr(self, 'worker') and self.worker is not None:
@@ -729,48 +618,48 @@ class WorkerProc:
                                    name="WorkerDeathMonitor")
             death_monitor.start()
 
-        if vllm_config_pipe is not None:
-            def monitor_config_updates():
-                nonlocal worker
-                logger.info(
-                    "Config monitor thread started, waiting for configs...")
-                try:
-                    while True:
-                        logger.info(f"Worker {os.getpid()} thread polling")
-                        if vllm_config_pipe.poll(timeout=1.0):
-                            new_cfg = vllm_config_pipe.recv()
-                            logger.info("recv logs")
-                            if new_cfg is None:
-                                # Reset signal
-                                logger.info(
-                                    f"Worker {os.getpid()} resetting to empty state")
-                                if worker is not None:
-                                    worker.reset_to_empty_state()
-                                    worker = None
-                            else:
-                                # New config - create worker if it doesn't exist
-                                logger.info(
-                                    f"Worker {os.getpid()} received new config")
-                                if worker is None:
-                                    # Create new worker with config
-                                    logger.info("Worker is None")
-                                    logger.info(new_cfg)
-                                    worker = WorkerProc(new_cfg, kwargs['local_rank'],
-                                                        kwargs['rank'], kwargs['distributed_init_method'],
-                                                        kwargs['input_shm_handle'])
-                                else:
-                                    logger.info("Worker is not None")
-                                    worker.update_process_vllm_config(
-                                        new_cfg, kwargs['rank'])
-                except EOFError:
-                    logger.info("Config pipe closed, no more updates")
-                except Exception as e:
-                    logger.warning(f"Config monitoring error: {e}")
+        # if vllm_config_pipe is not None:
+        #     def monitor_config_updates():
+        #         nonlocal worker
+        #         logger.info(
+        #             "Config monitor thread started, waiting for configs...")
+        #         try:
+        #             while True:
+        #                 logger.info(f"Worker {os.getpid()} thread polling")
+        #                 if vllm_config_pipe.poll(timeout=1.0):
+        #                     new_cfg = vllm_config_pipe.recv()
+        #                     logger.info("recv logs")
+        #                     if new_cfg is None:
+        #                         # Reset signal
+        #                         logger.info(
+        #                             f"Worker {os.getpid()} resetting to empty state")
+        #                         if worker is not None:
+        #                             worker.reset_to_empty_state()
+        #                             worker = None
+        #                     else:
+        #                         # New config - create worker if it doesn't exist
+        #                         logger.info(
+        #                             f"Worker {os.getpid()} received new config")
+        #                         if worker is None:
+        #                             # Create new worker with config
+        #                             logger.info("Worker is None")
+        #                             logger.info(new_cfg)
+        #                             worker = WorkerProc(new_cfg, kwargs['local_rank'],
+        #                                                 kwargs['rank'], kwargs['distributed_init_method'],
+        #                                                 kwargs['input_shm_handle'])
+        #                         else:
+        #                             logger.info("Worker is not None")
+        #                             worker.update_process_vllm_config(
+        #                                 new_cfg, kwargs['rank'])
+        #         except EOFError:
+        #             logger.info("Config pipe closed, no more updates")
+        #         except Exception as e:
+        #             logger.warning(f"Config monitoring error: {e}")
 
-            config_monitor = Thread(target=monitor_config_updates,
-                                    daemon=True,
-                                    name="WorkerVllmConfigMonitor")
-            config_monitor.start()
+        #     config_monitor = Thread(target=monitor_config_updates,
+        #                             daemon=True,
+        #                             name="WorkerVllmConfigMonitor")
+        #     config_monitor.start()
 
         try:
             reader.close()
@@ -794,8 +683,7 @@ class WorkerProc:
             ready_writer = None
 
             # Start minimal busy loop for empty worker
-            empty_worker_busy_loop(worker.rpc_broadcast_mq, worker.worker_response_mq,
-                                   vllm_config_pipe, kwargs)
+            worker.worker_busy_loop()
 
         except Exception:
             # NOTE: if an Exception arises in busy_loop, we send
@@ -828,7 +716,10 @@ class WorkerProc:
 
     def worker_busy_loop(self):
         """Main busy loop for Multiprocessing Workers"""
+        logger = init_logger(f"Worker {os.getpid()}")
         while True:
+            logger.info(
+                f"{os.getpid()} Worker Busy Loop started, self.rpc_broadcast_mq.dequeue is blocking")
             method, args, kwargs, output_rank = self.rpc_broadcast_mq.dequeue()
 
             try:
@@ -852,84 +743,3 @@ class WorkerProc:
             if output_rank is None or self.rank == output_rank:
                 self.worker_response_mq.enqueue(
                     (WorkerProc.ResponseStatus.SUCCESS, output))
-
-
-def empty_worker_busy_loop(rpc_broadcast_mq, worker_response_mq, vllm_config_pipe, worker_kwargs):
-    """Busy loop for empty workers that can receive configs and become full workers."""
-    worker = None
-
-    while True:
-        try:
-            # Check for new vllm_config from controller
-            if vllm_config_pipe and vllm_config_pipe.poll():
-                logger.info(f"Worker {os.getpid()} polling")
-                new_cfg = vllm_config_pipe.recv()
-                if new_cfg is None:
-                    # Reset signal
-                    logger.info(
-                        f"Worker {os.getpid()} resetting to empty state")
-                    if worker is not None:
-                        worker.reset_to_empty_state()
-                        worker = None
-                else:
-                    # New config - create worker if it doesn't exist
-                    logger.info(f"Worker {os.getpid()} received new config")
-                    if worker is None:
-                        # Create new worker with config
-                        worker = WorkerProc(new_cfg, worker_kwargs['local_rank'],
-                                            worker_kwargs['rank'], worker_kwargs['distributed_init_method'],
-                                            worker_kwargs['input_shm_handle'])
-                        # Start the normal worker busy loop
-                        logger.info("Worker configured, starting busy loop")
-                        worker.worker_busy_loop()
-                        return  # Exit empty loop when worker is ready
-                    else:
-                        worker.update_process_vllm_config(new_cfg, worker.rank)
-
-            # Handle RPC calls with timeout to prevent blocking
-            try:
-                method, args, kwargs, output_rank = rpc_broadcast_mq.dequeue(
-                    timeout=0.01)
-
-                # Handle basic health checks for empty workers
-                if method == "check_health" and worker is None:
-                    if output_rank is None or worker_kwargs['rank'] == output_rank:
-                        worker_response_mq.enqueue(
-                            (WorkerProc.ResponseStatus.SUCCESS, "empty_worker_healthy"))
-                elif worker is not None:
-                    # Worker is configured, handle normally
-                    try:
-                        if isinstance(method, str):
-                            func = getattr(worker.worker, method)
-                        elif isinstance(method, bytes):
-                            func = partial(cloudpickle.loads(
-                                method), worker.worker)
-                        output = func(*args, **kwargs)
-
-                        if output_rank is None or worker_kwargs['rank'] == output_rank:
-                            worker_response_mq.enqueue(
-                                (WorkerProc.ResponseStatus.SUCCESS, output))
-                    except Exception as e:
-                        if hasattr(e, "add_note"):
-                            e.add_note(traceback.format_exc())
-                        logger.exception("WorkerProc hit an exception.")
-                        if output_rank is None or worker_kwargs['rank'] == output_rank:
-                            worker_response_mq.enqueue(
-                                (WorkerProc.ResponseStatus.FAILURE, str(e)))
-                else:
-                    # Empty worker can't handle this method
-                    if output_rank is None or worker_kwargs['rank'] == output_rank:
-                        worker_response_mq.enqueue(
-                            (WorkerProc.ResponseStatus.FAILURE, "worker_not_configured"))
-            except TimeoutError:
-                # No RPC message to handle, continue looping
-                pass
-
-            time.sleep(0.001)  # Small sleep to prevent busy waiting
-
-        except EOFError:
-            logger.info("Config pipe closed, no more updates")
-            break
-        except Exception as e:
-            logger.warning(f"Empty worker loop error: {e}")
-            time.sleep(0.1)

@@ -220,6 +220,7 @@ class Worker(WorkerBase):
         logger.info(
             f"PID {os.getpid()} The Model Runner has been set up{self.model_runner}")
         logger.info(f"PID {os.getpid()} The Model Runner is completely empty ")
+
         # report_usage_stats requires hf.architecture
         # if self.rank == 0:
         #     # If usage stat is enabled, collect relevant info.
