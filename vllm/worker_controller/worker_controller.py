@@ -40,7 +40,8 @@ from vllm.v1.outputs import ModelRunnerOutput
 from vllm.worker.worker_base import WorkerWrapperBase
 from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
 from vllm_config import DummyModelConfig, DummyVllmConfig, CacheConfig, ParallelConfig
-
+from vllm.worker_controller.async_engine import AsyncLLM
+from vllm.engine.llm_engine import LLMEngine
 logger = init_logger(__name__)
 logging.basicConfig(
     level=logging.INFO,   # Show INFO and above
@@ -68,6 +69,10 @@ class ResourceAllocator:
             )
 
         return assigned_ranks
+
+    def get_ranks_by_uuid(self, uid: str):
+        """Return list of ranks assigned to the specified UUID."""
+        return [rank for rank, val in self.resources.items() if val == uid]
 
     def release_by_uuid(self, uid: str):
         """Release all resources assigned to this UUID."""
@@ -103,10 +108,7 @@ class WorkerController:
         self.io_thread_pool: Optional[ThreadPoolExecutor] = None
 
         self.world_size = vllm_config.parallel_config.world_size
-        self.available_workers = vllm_config.parallel_config.world_size
         self.vllm_config = vllm_config
-        # hard code to simulate GPU.
-        # vllm_config.parallel_config.worker_cls = "vllm.worker_controller.gpu_worker.Worker"
 
         self.resource = ResourceAllocator(
             num_resources=vllm_config.parallel_config.world_size)
@@ -178,36 +180,57 @@ class WorkerController:
     def create(self, vllm_config: VllmConfig, engineUUID: str):
         """Create an engine by assigning and configuring workers."""
         required = vllm_config.parallel_config.world_size
-        available = self.available_workers
-        if required > available:
-            raise RuntimeError(
-                f"Not enough resources: requested world_size={required}, "
-                f"but only {available} workers are available."
-            )
-
         # Assign workers to this engine
         assigned_ranks = self.resource.assign(required, engineUUID)
-        self.available_workers -= required
-
         result = []
+        (output, ) = self.collective_rpc(
+            "hold",
+            args=(vllm_config, engineUUID),
+            target_ranks=assigned_ranks)
         # make rpc calls to each assigned worker
-        for worker_rank in assigned_ranks:
-            (output, ) = self.collective_rpc(
-                "load_model",
-                args=(vllm_config, ),
-                unique_reply_rank=worker_rank)
-            result.append(output)
+        logger.info(output)
+        (output, ) = self.collective_rpc(
+            "load_model",
+            args=(),
+            target_ranks=assigned_ranks)
+        logger.info(output)
 
-        logger.info(result)
-
+        engine_cls = LLMEngine
+        if envs.VLLM_USE_V1:
+            from vllm.v1.engine.llm_engine import LLMEngine as V1LLMEngine
+            engine_cls = V1LLMEngine
+        engine = engine_cls.from_vllm_config(
+            vllm_config=vllm_config
+        )
+        logger.info(engine)
         # Store engine info
         self.engines[engineUUID] = {
             "workers": assigned_ranks,
-            "vllm_config": vllm_config
+            "vllm_config": vllm_config,
+            "engine": engine
         }
-
         logger.info(
             f"Engine {engineUUID} created with workers {assigned_ranks}")
+
+    '''
+    Delete the worker modelrunner and unhold the model
+    '''
+
+    def delete(self, engineUUID: str):
+        # Assign workers to this engine
+        assigned_ranks = self.resource.release_by_uuid(engineUUID)
+        # make rpc calls to each assigned worker to unload model
+        (output, ) = self.collective_rpc(
+            "unload_model",
+            args=(),
+            target_ranks=assigned_ranks)
+        logger.info(output)
+        # make rpc calls to each assigned worker to unhold worker
+        (output, ) = self.collective_rpc(
+            "unhold",
+            args=(),
+            target_ranks=assigned_ranks)
+        logger.info(output)
 
     def start_worker_monitor(self):
         workers = self.workers
@@ -244,11 +267,16 @@ class WorkerController:
         else:
             self.failure_callback = callback
 
+    # need to rewrite it to include the ranks of the specified workers
+
     def execute_model(
         self,
+        engine_uuid,
         scheduler_output,
     ) -> Union[ModelRunnerOutput, Future[ModelRunnerOutput]]:
         non_block = self.max_concurrent_batches > 1
+
+        target_ranks = self.resource.get_ranks_by_uuid(engine_uuid)
 
         if not self.has_connector:
             # get output only from a single worker (output_rank)
@@ -257,7 +285,8 @@ class WorkerController:
                 args=(scheduler_output, ),
                 unique_reply_rank=self.output_rank,
                 non_block=non_block,
-                timeout=envs.VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS)
+                timeout=envs.VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS,
+                target_ranks=target_ranks)
             return output
 
         # get output from all workers
@@ -265,7 +294,8 @@ class WorkerController:
             "execute_model",
             args=(scheduler_output, ),
             non_block=non_block,
-            timeout=envs.VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS)
+            timeout=envs.VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS,
+            target_ranks=target_ranks)
 
         # aggregate all workers output to a single output
         if non_block:
@@ -285,7 +315,8 @@ class WorkerController:
                        args: tuple = (),
                        kwargs: Optional[dict] = None,
                        non_block: bool = False,
-                       unique_reply_rank: Optional[int] = None) -> list[Any]:
+                       unique_reply_rank: Optional[int] = None,
+                       target_ranks: Optional[int] = None) -> list[Any]:
         if self.is_failed:
             raise RuntimeError("Executor failed.")
 
@@ -301,11 +332,19 @@ class WorkerController:
             else:
                 send_method = cloudpickle.dumps(
                     method, protocol=pickle.HIGHEST_PROTOCOL)
-            self.rpc_broadcast_mq.enqueue(
-                (send_method, args, kwargs, unique_reply_rank))
+            for rank in target_ranks:
+                self.rpc_broadcast_mq.enqueue(
+                    (send_method, args, kwargs, rank))
 
-            workers = (self.workers[unique_reply_rank],
-                       ) if unique_reply_rank is not None else self.workers
+            # workers = (self.workers[unique_reply_rank],
+            #            ) if unique_reply_rank is not None else self.worker
+            if unique_reply_rank is not None:
+                workers = [self.workers[unique_reply_rank]]
+            elif target_ranks is not None:
+                workers = [self.workers[rank] for rank in target_ranks]
+            else:
+                workers = self.workers
+
             responses = []
 
             def get_response(w: WorkerProcHandle,

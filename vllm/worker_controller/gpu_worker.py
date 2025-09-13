@@ -30,7 +30,7 @@ from vllm.v1.engine import ReconfigureDistributedRequest, ReconfigureRankType
 from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
 from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT, ModelRunnerOutput
 from vllm.v1.utils import report_usage_stats
-# from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.worker_base import WorkerBase
 from vllm.worker_controller.model_runner import RefactoredGPUModelRunner
 from vllm.worker_controller.vllm_config import DummyVllmConfig
@@ -62,6 +62,9 @@ class Worker(WorkerBase):
             # note: lazy import to avoid importing torch before initializing
             from vllm.utils import init_cached_hf_modules
             init_cached_hf_modules()
+        # set invoke status to false
+        self.invoke: str | None = None
+
         # Buffers saved before sleep
         self._sleep_saved_buffers: dict[str, torch.Tensor] = {}
         # Torch profiler. Enabled and configured through env vars:
@@ -91,22 +94,6 @@ class Worker(WorkerBase):
                     torch_profiler_trace_dir, use_gzip=True))
         else:
             self.profiler = None
-
-    def hold(self,
-             vllm_config: VllmConfig,
-             local_rank: int,
-             rank: int,
-             distributed_init_method: str,
-             is_driver_worker: bool = False):
-        super().__init__(vllm_config=vllm_config,
-                         local_rank=local_rank,
-                         rank=rank,
-                         distributed_init_method=distributed_init_method,
-                         is_driver_worker=is_driver_worker)
-        if self.model_config.trust_remote_code:
-            # note: lazy import to avoid importing torch before initializing
-            from vllm.utils import init_cached_hf_modules
-            init_cached_hf_modules()
 
     def sleep(self, level: int = 1) -> None:
         from vllm.device_allocator.cumem import CuMemAllocator
@@ -211,12 +198,7 @@ class Worker(WorkerBase):
         # Set random seed.
         set_random_seed(self.model_config.seed)
 
-        # Construct the model runner
-        # We need to see if we can create an empty GPUModelRunner
-
-        # The model runner is created at run time, can we create an empty Model Runner and then load at another time?
-        self.model_runner: RefactoredGPUModelRunner = RefactoredGPUModelRunner(
-            self.vllm_config, self.device)
+        self.model_runner: GPUModelRunner | None = None
 
         logger.info(
             f"PID {os.getpid()} The Model Runner has been set up{self.model_runner}")
@@ -229,14 +211,69 @@ class Worker(WorkerBase):
 
     # FIXME(youkaichao & ywang96): Use TorchDispatchMode instead of memory pool
     # to hijack tensor allocation.
+    def reload(self):
+        vllm_config = self.vllm_config
+        self.model_config = vllm_config.model_config
+        self.cache_config = vllm_config.cache_config
+        self.lora_config = vllm_config.lora_config
+        self.load_config = vllm_config.load_config
+        self.parallel_config = vllm_config.parallel_config
+        self.scheduler_config = vllm_config.scheduler_config
+        self.device_config = vllm_config.device_config
+        self.speculative_config = vllm_config.speculative_config
+        self.observability_config = vllm_config.observability_config
+        self.kv_transfer_config = vllm_config.kv_transfer_config
+        self.compilation_config = vllm_config.compilation_config
+        from vllm.platforms import current_platform
+        self.current_platform = current_platform
 
-    def load_model(self, vllmconfig: DummyVllmConfig) -> str:
-        logger.info(f"{os.getpid()} LOAD MODEL CALLED")
+    '''
+    - After executing this method, the worker belongs to the invoker. 
+    - Prevent other invokers from holding this worker again. 
+    - In this function, it should also take vllm_config as the input, and update the current vllm_config
+    '''
+
+    def hold(self, vllmconfig: VllmConfig, invokerId: str):
         logger.info(f"{vllmconfig}")
-        # eep_scale_up = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
-        # with self._maybe_get_memory_pool_context(tag="weights"):
-        #     self.model_runner.load_model(eep_scale_up=eep_scale_up)
+        if self.invoke:
+            raise RuntimeError("This worker has already been invoked")
+        # set invoked
+        self.invoke = invokerId
+        # Set vllmconfig
+        self.vllm_config = vllmconfig
+        # need to reload vllmconfig
+        self.reload()
+        logger.info(f"{os.getpid()} Hold worker called by {invokerId}")
+        res = f"{os.getpid()} Model held"
+        return res
+
+    def unhold(self):
+        if not self.invoke:
+            raise RuntimeError("This worker has has not been invoked")
+        logger.info(f"{os.getpid()} unhold worker called by {self.invoke}")
+        self.invoke = None
+        res = f"{os.getpid()} Model unheld"
+        return res
+
+    def load_model(self) -> str:
+        logger.info(f"{os.getpid()} LOAD MODEL CALLED")
+        vllmconfig = self.vllm_config
+        logger.info(f"{vllmconfig}")
+        # create GPUModelRunner
+        self.model_runner = GPUModelRunner(
+            vllmconfig, self.device)
+        eep_scale_up = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
+        with self._maybe_get_memory_pool_context(tag="weights"):
+            self.model_runner.load_model(eep_scale_up=eep_scale_up)
         res = f"{os.getpid()} Model Loaded"
+        return res
+
+    def unload_model(self) -> str:
+        logger.info(f"{os.getpid()} unload model called")
+        # create GPUModelRunner
+        self.model_runner: GPUModelRunner = None
+
+        res = f"{os.getpid()} model unloaded"
         return res
 
     def update_config(self, overrides: dict[str, Any]) -> None:

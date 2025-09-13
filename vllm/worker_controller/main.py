@@ -45,7 +45,7 @@ def create_engine(request: EngineCreateRequest):
     try:
         # Convert dict to VllmConfig object if needed
         vllm_config = request.vllm_config if isinstance(
-            request.vllm_config, DummyVllmConfig) else DummyVllmConfig(**request.vllm_config)
+            request.vllm_config, VllmConfig) else VllmConfig(**request.vllm_config)
 
         # Create engine: assign workers and load config
         worker_controller.create(vllm_config, request.engine_uuid)
@@ -68,7 +68,7 @@ def delete_engine(engine_uuid: str):
         worker_controller.delete(engine_uuid)
         return {
             "message": f"Engine {engine_uuid} deleted and workers reset successfully",
-            "available_workers": worker_controller.available_workers
+            "available_workers": worker_controller.resource.num_free()
         }
     except Exception as e:
         logger.error(f"Failed to delete engine {engine_uuid}: {e}")
@@ -103,7 +103,7 @@ def execute_model(engine_uuid: str, request: EngineExecuteRequest):
         # Execute model using the configured workers
         # Note: This would require implementing execute_model method on WorkerController
         # that operates on specific engine's workers
-        result = worker_controller.execute_model_for_engine(
+        result = worker_controller.execute_model(
             engine_uuid, request.scheduler_output)
         return {"result": result}
     except Exception as e:
