@@ -17,6 +17,11 @@ class EngineCreateRequest(BaseModel):
     vllm_config: Dict[str, Any]
 
 
+class PipeRequest(BaseModel):
+    rank: int
+    method: str
+
+
 class EngineExecuteRequest(BaseModel):
     engine_uuid: str
     scheduler_output: Dict[str, Any]
@@ -59,6 +64,15 @@ def create_engine(request: EngineCreateRequest):
     except Exception as e:
         logger.error(f"Failed to create engine {request.engine_uuid}: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/pipecall")
+def pipe_call(request: PipeRequest):
+
+    output = worker_controller.pipecall(request.rank, request.method)
+    return {
+        "output": output
+    }
 
 
 @app.delete("/engines/{engine_uuid}")

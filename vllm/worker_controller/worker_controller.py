@@ -42,6 +42,10 @@ from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
 from vllm_config import DummyModelConfig, DummyVllmConfig, CacheConfig, ParallelConfig
 from vllm.worker_controller.async_engine import AsyncLLM
 from vllm.engine.llm_engine import LLMEngine
+
+from multiprocessing import Pipe, Process
+from typing import List
+
 logger = init_logger(__name__)
 logging.basicConfig(
     level=logging.INFO,   # Show INFO and above
@@ -115,6 +119,7 @@ class WorkerController:
 
         set_multiprocessing_worker_envs(vllm_config.parallel_config)
 
+        self.pipes = {}
         # Track engines and their assigned workers
         # engine_uuid -> {"workers": [ranks], "vllm_config": config}
         self.engines = {}
@@ -143,8 +148,6 @@ class WorkerController:
                         distributed_init_method=distributed_init_method,
                         input_shm_handle=scheduler_output_handle,
                     ))
-            logger.info("config 0 pipe")
-            logger.info(unready_workers[0].vllm_config_writer)
             # Wait for workers to be ready (communication setup only)
             self.workers = WorkerProc.wait_for_ready(unready_workers)
 
@@ -152,6 +155,11 @@ class WorkerController:
             self.rpc_broadcast_mq.wait_until_ready()
             for w in self.workers:
                 w.worker_response_mq.wait_until_ready()
+                self.pipes[w.rank] = {
+                    "parent_send": w.parent_send, "parent_recv": w.parent_recv}
+
+            logger.info("PipeDictionary")
+            logger.info(f"{self.pipes}")
 
             self.start_worker_monitor()
             success = True
@@ -176,6 +184,17 @@ class WorkerController:
         self.has_connector = self.vllm_config.kv_transfer_config is not None
         self.kv_output_aggregator = KVOutputAggregator(
             self.parallel_config.world_size)
+
+    def pipecall(self, rank: int, method: str):
+        parentsend: Connection = self.pipes[rank]["parent_send"]
+        parentsend.send((method, (), {}, None))
+        parentrecv: Connection = self.pipes[rank]["parent_recv"]
+
+        if parentrecv.poll(timeout=1.0):  # wait up to 1 second
+            msg1, msg2 = parentrecv.recv()
+            return msg2
+        else:
+            return None
 
     def create(self, vllm_config: VllmConfig, engineUUID: str):
         """Create an engine by assigning and configuring workers."""
@@ -454,7 +473,8 @@ class UnreadyWorkerProcHandle:
     proc: BaseProcess
     rank: int
     ready_pipe: Connection
-    vllm_config_writer: Connection
+    parent_send: Connection
+    parent_recv: Connection
     death_writer: Optional[Connection] = None
 
 
@@ -463,7 +483,8 @@ class WorkerProcHandle:
     proc: BaseProcess
     rank: int
     worker_response_mq: MessageQueue  # The worker process writes to this MQ
-    vllm_config_writer: Connection
+    parent_send: Connection
+    parent_recv: Connection
     engineUUID: str | None = None
     death_writer: Optional[Connection] = None
 
@@ -475,7 +496,8 @@ class WorkerProcHandle:
             proc=unready_handle.proc,
             rank=unready_handle.rank,
             worker_response_mq=worker_response_mq,
-            vllm_config_writer=unready_handle.vllm_config_writer,
+            parent_send=unready_handle.parent_send,
+            parent_recv=unready_handle.parent_recv,
             death_writer=unready_handle.death_writer,
         )
 
@@ -536,8 +558,9 @@ class WorkerProc:
         # Create death pipe to detect parent process exit
         death_reader, death_writer = context.Pipe(duplex=False)
 
-        # create pipe to update the vllm_config later
-        vllm_config_reader, vllm_config_writer = context.Pipe(duplex=False)
+        # Control channel: parent -> worker (send), worker -> parent (recv)
+        child_recv, parent_send,  = Pipe(duplex=False)
+        parent_recv, child_send = Pipe(duplex=False)
 
         process_kwargs = {
             "vllm_config": vllm_config,
@@ -547,7 +570,8 @@ class WorkerProc:
             "input_shm_handle": input_shm_handle,
             "ready_pipe": (reader, writer),
             "death_pipe": death_reader,
-            "vllm_config_pipe": vllm_config_reader,
+            "child_recv": child_recv,
+            "child_send": child_send
         }
         # Run EngineCore busy loop in background process.
         proc = context.Process(target=WorkerProc.worker_main,
@@ -559,7 +583,7 @@ class WorkerProc:
         writer.close()
         # Keep death_writer open in parent - when parent exits,
         # death_reader in child will get EOFError
-        return UnreadyWorkerProcHandle(proc, rank, reader, death_writer, vllm_config_writer)
+        return UnreadyWorkerProcHandle(proc, rank, reader, parent_send, parent_recv, death_writer)
 
     def reset_to_empty_state(self):
         """Reset this worker to empty state (unload model)."""
@@ -642,7 +666,9 @@ class WorkerProc:
         # tuple[Connection, Connection]
         reader, ready_writer = kwargs.pop("ready_pipe")
         death_pipe = kwargs.pop("death_pipe", None)
-        vllm_config_pipe = kwargs.pop("vllm_config_pipe", None)
+
+        child_recv = kwargs.pop("child_recv", None)
+        child_send = kwargs.pop("child_send", None)
 
         logger.info(f"Worker {os.getpid()}")
         # Start death monitoring thread if death_pipe is provided
@@ -664,49 +690,6 @@ class WorkerProc:
                                    daemon=True,
                                    name="WorkerDeathMonitor")
             death_monitor.start()
-
-        # if vllm_config_pipe is not None:
-        #     def monitor_config_updates():
-        #         nonlocal worker
-        #         logger.info(
-        #             "Config monitor thread started, waiting for configs...")
-        #         try:
-        #             while True:
-        #                 logger.info(f"Worker {os.getpid()} thread polling")
-        #                 if vllm_config_pipe.poll(timeout=1.0):
-        #                     new_cfg = vllm_config_pipe.recv()
-        #                     logger.info("recv logs")
-        #                     if new_cfg is None:
-        #                         # Reset signal
-        #                         logger.info(
-        #                             f"Worker {os.getpid()} resetting to empty state")
-        #                         if worker is not None:
-        #                             worker.reset_to_empty_state()
-        #                             worker = None
-        #                     else:
-        #                         # New config - create worker if it doesn't exist
-        #                         logger.info(
-        #                             f"Worker {os.getpid()} received new config")
-        #                         if worker is None:
-        #                             # Create new worker with config
-        #                             logger.info("Worker is None")
-        #                             logger.info(new_cfg)
-        #                             worker = WorkerProc(new_cfg, kwargs['local_rank'],
-        #                                                 kwargs['rank'], kwargs['distributed_init_method'],
-        #                                                 kwargs['input_shm_handle'])
-        #                         else:
-        #                             logger.info("Worker is not None")
-        #                             worker.update_process_vllm_config(
-        #                                 new_cfg, kwargs['rank'])
-        #         except EOFError:
-        #             logger.info("Config pipe closed, no more updates")
-        #         except Exception as e:
-        #             logger.warning(f"Config monitoring error: {e}")
-
-        #     config_monitor = Thread(target=monitor_config_updates,
-        #                             daemon=True,
-        #                             name="WorkerVllmConfigMonitor")
-        #     config_monitor.start()
 
         try:
             reader.close()
@@ -730,7 +713,7 @@ class WorkerProc:
             ready_writer = None
 
             # Start minimal busy loop for empty worker
-            worker.worker_busy_loop()
+            worker.worker_busy_loop([child_send, child_recv])
 
         except Exception:
             # NOTE: if an Exception arises in busy_loop, we send
@@ -761,25 +744,42 @@ class WorkerProc:
         SUCCESS = auto()
         FAILURE = auto()
 
-    def worker_busy_loop(self):
+    def worker_busy_loop(self, pipes: List[Connection]):
         """Main busy loop for Multiprocessing Workers"""
         logger = init_logger(f"Worker {os.getpid()}")
+        child_send, child_recv = pipes
         while True:
-            logger.info(
-                f"{os.getpid()} Worker Busy Loop started, self.rpc_broadcast_mq.dequeue is blocking")
-            method, args, kwargs, output_rank = self.rpc_broadcast_mq.dequeue()
-            logger.info(
-                f"{os.getpid()} Received RPC call")
-            output = None
-            try:
+            if child_recv.poll(timeout=1.0):  # non-blocking check
+                method, args, kwargs, output_rank = child_recv.recv()
+                logger.info(
+                    f"{os.getpid()} Worker received pipe message: {method}")
                 if isinstance(method, str):
                     func = getattr(self.worker, method)
                 elif isinstance(method, bytes):
                     func = partial(cloudpickle.loads(method), self.worker)
-
+                output = func(*args, **kwargs)
+                child_send.send(output)
+            try:
+                # logger.info(
+                #     f"{os.getpid()} RPC poll")
+                method, args, kwargs, output_rank = self.rpc_broadcast_mq.dequeue(
+                    timeout=0)
+                output = None
+                if isinstance(method, str):
+                    func = getattr(self.worker, method)
+                elif isinstance(method, bytes):
+                    func = partial(cloudpickle.loads(method), self.worker)
                 # make sure the message is targeted at the specific worker
                 if self.rank == output_rank:
                     output = func(*args, **kwargs)
+
+                if output_rank is None or self.rank == output_rank:
+                    self.worker_response_mq.enqueue(
+                        (WorkerProc.ResponseStatus.SUCCESS, output))
+            except TimeoutError:
+                # This is not an error. It simply means the queue was empty.
+                # We do nothing and let the loop continue.
+                pass
             except Exception as e:
                 # Notes have been introduced in python 3.11
                 if hasattr(e, "add_note"):
@@ -791,7 +791,3 @@ class WorkerProc:
                     self.worker_response_mq.enqueue(
                         (WorkerProc.ResponseStatus.FAILURE, str(e)))
                 continue
-
-            if output_rank is None or self.rank == output_rank:
-                self.worker_response_mq.enqueue(
-                    (WorkerProc.ResponseStatus.SUCCESS, output))
