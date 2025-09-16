@@ -45,7 +45,12 @@ from vllm.engine.llm_engine import LLMEngine
 
 from multiprocessing import Pipe, Process
 from typing import List
-
+from vllm.entrypoints.openai.cli_args import make_arg_parser
+from vllm.worker_controller.api_server import run_server
+from vllm.utils import (Device, FlexibleArgumentParser, decorate_logs,
+                        get_open_zmq_ipc_path, is_valid_ipv6_address,
+                        set_ulimit)
+import uvloop
 logger = init_logger(__name__)
 logging.basicConfig(
     level=logging.INFO,   # Show INFO and above
@@ -55,37 +60,60 @@ logging.basicConfig(
 
 
 class ResourceAllocator:
-    def __init__(self, num_resources: int):
+    def __init__(self, num_resources: int, start_port: int = 8001):
         # 0 means free/unassigned
         self.resources = {i: 0 for i in range(num_resources)}
+        self.port_map = {}  # uid -> port
+        self.rank_to_uid = {}  # rank -> uid
+        self.start_port = start_port
+        self.next_port = start_port
 
-    def assign(self, num: int, uid: str = None):
+    def assign(self, num: int, uid: str):
+        if uid in self.port_map:
+            # UID already has a port
+            port = self.port_map[uid]
+        else:
+            port = self.next_port
+            self.port_map[uid] = port
+            self.next_port += 1
+
         assigned_ranks = []
         for rank, val in self.resources.items():
             if val == 0 and len(assigned_ranks) < num:
                 self.resources[rank] = uid
+                self.rank_to_uid[rank] = uid
                 assigned_ranks.append(rank)
 
         if len(assigned_ranks) < num:
-            # Not enough free resources
+            # Rollback partial assignment
+            for rank in assigned_ranks:
+                self.resources[rank] = 0
+                del self.rank_to_uid[rank]
             raise RuntimeError(
                 f"Only {len(assigned_ranks)} free resources, requested {num}"
             )
 
-        return assigned_ranks
+        return assigned_ranks, port
 
     def get_ranks_by_uuid(self, uid: str):
         """Return list of ranks assigned to the specified UUID."""
         return [rank for rank, val in self.resources.items() if val == uid]
 
+    def get_port_by_uuid(self, uid: str):
+        """Return the port assigned to the specified UID."""
+        return self.port_map.get(uid)
+
     def release_by_uuid(self, uid: str):
-        """Release all resources assigned to this UUID."""
-        assigned_ranks = []
+        """Release all ranks assigned to this UID."""
+        released_ranks = []
         for rank, val in self.resources.items():
             if val == uid:
                 self.resources[rank] = 0
-                assigned_ranks.append(rank)
-        return assigned_ranks
+                del self.rank_to_uid[rank]
+                released_ranks.append(rank)
+        if uid in self.port_map:
+            del self.port_map[uid]
+        return released_ranks
 
     def free(self):
         """Return list of currently free ranks."""
@@ -96,8 +124,12 @@ class ResourceAllocator:
         return sum(1 for val in self.resources.values() if val == 0)
 
     def status(self):
-        """Return mapping: rank -> UUID/0."""
-        return dict(self.resources)
+        """Return mapping: rank -> (UUID/0, port/None)."""
+        status_dict = {}
+        for rank, uid in self.resources.items():
+            port = self.port_map.get(uid) if uid != 0 else None
+            status_dict[rank] = (uid, port)
+        return status_dict
 
 
 class WorkerController:
@@ -185,49 +217,63 @@ class WorkerController:
         self.kv_output_aggregator = KVOutputAggregator(
             self.parallel_config.world_size)
 
-    def pipecall(self, rank: int, method: str):
+    def pipecall(self, rank: int, method: str, vllmconfig: dict):
         parentsend: Connection = self.pipes[rank]["parent_send"]
-        parentsend.send((method, (), {}, None))
+        parentsend.send((method, (vllmconfig,), {}, None))
         parentrecv: Connection = self.pipes[rank]["parent_recv"]
-
-        if parentrecv.poll(timeout=1.0):  # wait up to 1 second
-            msg1, msg2 = parentrecv.recv()
-            return msg2
-        else:
-            return None
+        return parentrecv.recv()
 
     def create(self, vllm_config: VllmConfig, engineUUID: str):
         """Create an engine by assigning and configuring workers."""
         required = vllm_config.parallel_config.world_size
+        logger.info(f"World Size {required}")
         # Assign workers to this engine
-        assigned_ranks = self.resource.assign(required, engineUUID)
+        assigned_ranks, port = self.resource.assign(
+            required, engineUUID)
+        logger.info(assigned_ranks)
         result = []
-        (output, ) = self.collective_rpc(
-            "hold",
-            args=(vllm_config, engineUUID),
-            target_ranks=assigned_ranks)
-        # make rpc calls to each assigned worker
-        logger.info(output)
-        (output, ) = self.collective_rpc(
-            "load_model",
-            args=(),
-            target_ranks=assigned_ranks)
-        logger.info(output)
+        parentsendpipes = []
+        parentrecvpipes = []
+        for rank in assigned_ranks:
+            parentsend: Connection = self.pipes[rank]["parent_send"]
+            parentsend.send(("hold", (vllm_config, engineUUID), {}, None))
+            parentsendpipes.append(parentsend)
+            parentrecv: Connection = self.pipes[rank]["parent_recv"]
+            result.append([rank, parentrecv.recv()])
+            parentrecvpipes.append(parentrecv)
 
-        engine_cls = LLMEngine
-        if envs.VLLM_USE_V1:
-            from vllm.v1.engine.llm_engine import LLMEngine as V1LLMEngine
-            engine_cls = V1LLMEngine
-        engine = engine_cls.from_vllm_config(
-            vllm_config=vllm_config
-        )
-        logger.info(engine)
+        logger.info(result)
+        result = []
+        for rank in assigned_ranks:
+            parentsend: Connection = self.pipes[rank]["parent_send"]
+            parentsend.send(("load_model", (vllm_config,), {}, None))
+            parentrecv: Connection = self.pipes[rank]["parent_recv"]
+            result.append([rank, parentrecv.recv()])
+        logger.info(result)
+        # run api server and create the engine and executor and pass the pipes
+        parser = FlexibleArgumentParser(
+            description="vLLM OpenAI-Compatible RESTful API server.")
+        parser = make_arg_parser(parser)
+        args = parser.parse_args()
+
+        args.parentsendpipes = parentsendpipes
+        args.parentsrecvpipes = parentrecvpipes
+        args.vllmconfig = vllm_config
+        args.model = vllm_config.model_config.model
+        args.port = port
+
+        def run_api_server(args):
+            uvloop.run(run_server(args))
+
+        proc = Process(target=run_api_server, args=(args,), daemon=False)
+        proc.start()
         # Store engine info
         self.engines[engineUUID] = {
             "workers": assigned_ranks,
             "vllm_config": vllm_config,
-            "engine": engine
+
         }
+
         logger.info(
             f"Engine {engineUUID} created with workers {assigned_ranks}")
 
@@ -559,7 +605,7 @@ class WorkerProc:
         death_reader, death_writer = context.Pipe(duplex=False)
 
         # Control channel: parent -> worker (send), worker -> parent (recv)
-        child_recv, parent_send,  = Pipe(duplex=False)
+        child_recv, parent_send, = Pipe(duplex=False)
         parent_recv, child_send = Pipe(duplex=False)
 
         process_kwargs = {

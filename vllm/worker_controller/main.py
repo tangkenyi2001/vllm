@@ -20,6 +20,7 @@ class EngineCreateRequest(BaseModel):
 class PipeRequest(BaseModel):
     rank: int
     method: str
+    vllmConfig: Optional[Dict[str, Any]] = {}
 
 
 class EngineExecuteRequest(BaseModel):
@@ -68,8 +69,15 @@ def create_engine(request: EngineCreateRequest):
 
 @app.post("/pipecall")
 def pipe_call(request: PipeRequest):
+    vllm_config = request.vllmConfig if isinstance(
+        request.vllmConfig, VllmConfig) else VllmConfig(**request.vllmConfig)
 
-    output = worker_controller.pipecall(request.rank, request.method)
+    kwargs = {
+        "rank": request.rank,
+        "method": request.method,
+        "vllmconfig": vllm_config,
+    }
+    output = worker_controller.pipecall(**kwargs)
     return {
         "output": output
     }

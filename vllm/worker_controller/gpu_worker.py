@@ -199,10 +199,8 @@ class Worker(WorkerBase):
         set_random_seed(self.model_config.seed)
 
         self.model_runner: GPUModelRunner | None = None
-
         logger.info(
-            f"PID {os.getpid()} The Model Runner has been set up{self.model_runner}")
-        logger.info(f"PID {os.getpid()} The Model Runner is completely empty ")
+            f"PID {os.getpid()} The Model Runner is {self.model_runner}")
 
         # report_usage_stats requires hf.architecture
         # if self.rank == 0:
@@ -255,9 +253,8 @@ class Worker(WorkerBase):
         res = f"{os.getpid()} Model unheld"
         return res
 
-    def load_model(self) -> str:
+    def load_model(self, vllmconfig) -> str:
         logger.info(f"{os.getpid()} LOAD MODEL CALLED")
-        vllmconfig = self.vllm_config
         logger.info(f"{vllmconfig}")
         # create GPUModelRunner
         self.model_runner = GPUModelRunner(
