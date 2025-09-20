@@ -1,16 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-import uuid
 import multiprocessing
 import os
 import pickle
 import signal
-import sys
 import threading
 import time
 import traceback
 import weakref
-from datetime import datetime
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -21,9 +18,7 @@ from threading import Thread
 from typing import Any, Callable, Optional, Union, cast
 
 import cloudpickle
-import logging
-import socket
-import time
+
 import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.distributed import (destroy_distributed_environment,
@@ -37,107 +32,18 @@ from vllm.logger import init_logger
 from vllm.utils import (decorate_logs, get_distributed_init_method,
                         get_loopback_ip, get_mp_context, get_open_port,
                         set_process_title)
-from vllm.v1.executor.abstract import FailureCallback
-from vllm.v1.outputs import ModelRunnerOutput
-from vllm.worker.worker_base import WorkerWrapperBase
+from vllm.v1.executor.abstract import Executor, FailureCallback
 from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
-from vllm_config import DummyModelConfig, DummyVllmConfig, CacheConfig, ParallelConfig
-from vllm.worker_controller.async_engine import AsyncLLM
-from vllm.engine.llm_engine import LLMEngine
+from vllm.worker.worker_base import WorkerWrapperBase
 
-from multiprocessing import Pipe, Process
-from typing import List
-from vllm.entrypoints.openai.cli_args import make_arg_parser
-from vllm.worker_controller.api_server import run_server
-from vllm.utils import (Device, FlexibleArgumentParser, decorate_logs,
-                        get_open_zmq_ipc_path, is_valid_ipv6_address,
-                        set_ulimit)
-import uvloop
-from vllm.worker_controller.api_server import setup_server
 logger = init_logger(__name__)
-logging.basicConfig(
-    level=logging.INFO,   # Show INFO and above
-    format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
 
 
-class ResourceAllocator:
-    def __init__(self, num_resources: int, start_port: int = 8001):
-        # 0 means free/unassigned
-        self.resources = {i: 0 for i in range(num_resources)}
-        self.port_map = {}  # uid -> port
-        self.rank_to_uid = {}  # rank -> uid
-        self.start_port = start_port
-        self.next_port = start_port
+class MultiprocExecutor(Executor):
 
-    def assign(self, num: int, uid: str):
-        if uid in self.port_map:
-            # UID already has a port
-            port = self.port_map[uid]
-        else:
-            port = self.next_port
-            self.port_map[uid] = port
-            self.next_port += 1
+    supports_pp: bool = True
 
-        assigned_ranks = []
-        for rank, val in self.resources.items():
-            if val == 0 and len(assigned_ranks) < num:
-                self.resources[rank] = uid
-                self.rank_to_uid[rank] = uid
-                assigned_ranks.append(rank)
-
-        if len(assigned_ranks) < num:
-            # Rollback partial assignment
-            for rank in assigned_ranks:
-                self.resources[rank] = 0
-                del self.rank_to_uid[rank]
-            raise RuntimeError(
-                f"Only {len(assigned_ranks)} free resources, requested {num}"
-            )
-
-        return assigned_ranks, port
-
-    def get_ranks_by_uuid(self, uid: str):
-        """Return list of ranks assigned to the specified UUID."""
-        return [rank for rank, val in self.resources.items() if val == uid]
-
-    def get_port_by_uuid(self, uid: str):
-        """Return the port assigned to the specified UID."""
-        return self.port_map.get(uid)
-
-    def release_by_uuid(self, uid: str):
-        """Release all ranks assigned to this UID."""
-        released_ranks = []
-        for rank, val in self.resources.items():
-            if val == uid:
-                self.resources[rank] = 0
-                del self.rank_to_uid[rank]
-                released_ranks.append(rank)
-        if uid in self.port_map:
-            del self.port_map[uid]
-        return released_ranks
-
-    def free(self):
-        """Return list of currently free ranks."""
-        return [rank for rank, val in self.resources.items() if val == 0]
-
-    def num_free(self) -> int:
-        """Return the number of currently free ranks."""
-        return sum(1 for val in self.resources.values() if val == 0)
-
-    def status(self):
-        """Return mapping: rank -> (UUID/0, port/None)."""
-        status_dict = {}
-        for rank, uid in self.resources.items():
-            port = self.port_map.get(uid) if uid != 0 else None
-            status_dict[rank] = (uid, port)
-        return status_dict
-
-
-class WorkerController:
-
-    def __init__(self, vllm_config: VllmConfig) -> None:
+    def _init_executor(self) -> None:
         # Call self.shutdown at exit to clean up
         # and ensure workers will be terminated.
         self._finalizer = weakref.finalize(self, self.shutdown)
@@ -146,67 +52,21 @@ class WorkerController:
         self.failure_callback: Optional[FailureCallback] = None
         self.io_thread_pool: Optional[ThreadPoolExecutor] = None
 
-        self.world_size = vllm_config.parallel_config.world_size
-        self.vllm_config = vllm_config
+        self.world_size = self.parallel_config.world_size
+        tensor_parallel_size = self.parallel_config.tensor_parallel_size
+        pp_parallel_size = self.parallel_config.pipeline_parallel_size
+        assert self.world_size == tensor_parallel_size * pp_parallel_size, (
+            f"world_size ({self.world_size}) must be equal to the "
+            f"tensor_parallel_size ({tensor_parallel_size}) x pipeline"
+            f"_parallel_size ({pp_parallel_size}). ")
 
-        self.resource = ResourceAllocator(
-            num_resources=vllm_config.parallel_config.world_size)
+        # Set multiprocessing envs that are common to V0 and V1
+        set_multiprocessing_worker_envs(self.parallel_config)
 
-        set_multiprocessing_worker_envs(vllm_config.parallel_config)
-
-        self.pipes = {}
-        # Track engines and their assigned workers
-        # engine_uuid -> {"workers": [ranks], "vllm_config": config}
-        self.engines = {}
-        # Initialize empty workers with minimal setup
-        distributed_init_method = get_distributed_init_method(
-            get_loopback_ip(), get_open_port())
-
-        max_chunk_bytes = envs.VLLM_MQ_MAX_CHUNK_BYTES_MB * 1024 * 1024
-        self.rpc_broadcast_mq = MessageQueue(self.world_size,
-                                             self.world_size,
-                                             max_chunk_bytes=max_chunk_bytes)
-        scheduler_output_handle = self.rpc_broadcast_mq.export_handle()
-
-        # Create empty workers (no model loading)
-        unready_workers: list[UnreadyWorkerProcHandle] = []
-        success = False
-
-        try:
-            for rank in range(self.world_size):
-                logger.info(f"Creating Worker${rank}")
-                unready_workers.append(
-                    WorkerProc.make_worker_process(
-                        vllm_config=self.vllm_config,
-                        local_rank=rank,
-                        rank=rank,
-                        distributed_init_method=distributed_init_method,
-                        input_shm_handle=scheduler_output_handle,
-                    ))
-            # Wait for workers to be ready (communication setup only)
-            self.workers = WorkerProc.wait_for_ready(unready_workers)
-
-            # Ensure message queues are ready
-            self.rpc_broadcast_mq.wait_until_ready()
-            for w in self.workers:
-                w.worker_response_mq.wait_until_ready()
-                self.pipes[w.rank] = {
-                    "parent_send": w.parent_send, "parent_recv": w.parent_recv}
-
-            logger.info("PipeDictionary")
-            logger.info(f"{self.pipes}")
-
-            self.start_worker_monitor()
-            success = True
-        finally:
-            if not success:
-                # Clean up the worker procs if there was a failure
-                for uw in unready_workers:
-                    if uw.death_writer is not None:
-                        uw.death_writer.close()
-                self._ensure_worker_termination(
-                    [uw.proc for uw in unready_workers])
-
+        # Ensure message queues are ready. Will deadlock if re-ordered
+        # Must be kept consistent with the WorkerProc.
+        # For pipeline parallel, we use a thread pool for asynchronous
+        # execute_model.
         if self.max_concurrent_batches > 1:
             # Note: must use only 1 IO thread to keep dequeue sequence
             # from the response queue
@@ -214,151 +74,16 @@ class WorkerController:
             self.io_thread_pool = ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="mp_exec_io")
 
-        self.parallel_config = self.vllm_config.parallel_config
         self.output_rank = self._get_output_rank()
         self.has_connector = self.vllm_config.kv_transfer_config is not None
         self.kv_output_aggregator = KVOutputAggregator(
             self.parallel_config.world_size)
 
-    def pipecall(self, rank: int, method: str, vllmconfig: dict):
-        parentsend: Connection = self.pipes[rank]["parent_send"]
-        parentsend.send((method, (vllmconfig,), {}, None))
-        parentrecv: Connection = self.pipes[rank]["parent_recv"]
-        return parentrecv.recv()
-
-    def create(self, vllm_config: VllmConfig, engineUUID: str):
-        """Create an engine by assigning and configuring workers."""
-        required = vllm_config.parallel_config.world_size
-        logger.info(f"World Size {required}")
-        # Assign workers to this engine
-        assigned_ranks, port = self.resource.assign(
-            required, engineUUID)
-        logger.info(assigned_ranks)
-        result = []
-        parentsendpipes = []
-        parentrecvpipes = []
-        for rank in assigned_ranks:
-            parentsend: Connection = self.pipes[rank]["parent_send"]
-            parentsend.send(("hold", (vllm_config, engineUUID), {}, None))
-            parentsendpipes.append(parentsend)
-            parentrecv: Connection = self.pipes[rank]["parent_recv"]
-            result.append([rank, parentrecv.recv()])
-            parentrecvpipes.append(parentrecv)
-
-        logger.info(result)
-        result = []
-        for rank in assigned_ranks:
-            parentsend: Connection = self.pipes[rank]["parent_send"]
-            parentsend.send(("load_model", (vllm_config,), {}, None))
-            parentrecv: Connection = self.pipes[rank]["parent_recv"]
-            result.append([rank, parentrecv.recv()])
-        logger.info(result)
-        # run api server and create the engine and executor and pass the pipes
-        parser = FlexibleArgumentParser(
-            description="vLLM OpenAI-Compatible RESTful API server.")
-        parser = make_arg_parser(parser)
-        args = parser.parse_args()
-
-        args.parentsendpipes = parentsendpipes
-        args.parentsrecvpipes = parentrecvpipes
-        args.vllmconfig = vllm_config
-        args.model = vllm_config.model_config.model
-        args.port = port
-
-        def run_api_server(args):
-            uvloop.run(run_server(args))
-
-        proc = Process(target=run_api_server, args=(args,), daemon=False)
-        proc.start()
-
-        def wait_for_port(host, port, timeout=60):
-            """Wait until a port starts accepting TCP connections."""
-            start = time.time()
-            while time.time() - start < timeout:
-                try:
-                    with socket.create_connection((host, port), timeout=1):
-                        return True
-                except OSError:
-                    time.sleep(0.1)
-            raise TimeoutError(
-                f"Server on {host}:{port} did not start within {timeout} seconds")
-
-        wait_for_port("127.0.0.1", port)
-        logger.info(f"Engine {engineUUID} started and is ready on port {port}")
-        # Store engine info
-        self.engines[engineUUID] = {
-            "workers": assigned_ranks,
-            "vllm_config": vllm_config,
-
-        }
-        message = f"Engine {engineUUID} created with workers {assigned_ranks} on {port}"
-        return message
-
-    '''
-    Delete the worker modelrunner and unhold the model
-    '''
-
-    def delete(self, engineUUID: str):
-        # Assign workers to this engine
-        assigned_ranks = self.resource.release_by_uuid(engineUUID)
-        # make rpc calls to each assigned worker to unload model
-        (output, ) = self.collective_rpc(
-            "unload_model",
-            args=(),
-            target_ranks=assigned_ranks)
-        logger.info(output)
-        # make rpc calls to each assigned worker to unhold worker
-        (output, ) = self.collective_rpc(
-            "unhold",
-            args=(),
-            target_ranks=assigned_ranks)
-        logger.info(output)
-
-    def start_worker_monitor(self):
-        workers = self.workers
-        self_ref = weakref.ref(self)
-
-        # Monitors worker process liveness. If any die unexpectedly,
-        # logs an error, shuts down the executor and invokes the failure
-        # callback to inform the engine.
-        def monitor_workers():
-            sentinels = [h.proc.sentinel for h in workers]
-            died = multiprocessing.connection.wait(sentinels)
-            _self = self_ref()
-            if not _self or getattr(_self, 'shutting_down', False):
-                return
-            _self.is_failed = True
-            proc_name = next(h.proc.name for h in workers
-                             if h.proc.sentinel == died[0])
-            logger.error(
-                "Worker proc %s died unexpectedly, "
-                "shutting down executor.", proc_name)
-            _self.shutdown()
-            callback = _self.failure_callback
-            if callback is not None:
-                _self.failure_callback = None
-                callback()
-
-        Thread(target=monitor_workers,
-               daemon=True,
-               name="MultiprocWorkerMonitor").start()
-
-    def register_failure_callback(self, callback: FailureCallback):
-        if self.is_failed:
-            callback()
-        else:
-            self.failure_callback = callback
-
-    # need to rewrite it to include the ranks of the specified workers
-
     def execute_model(
         self,
-        engine_uuid,
         scheduler_output,
     ) -> Union[ModelRunnerOutput, Future[ModelRunnerOutput]]:
         non_block = self.max_concurrent_batches > 1
-
-        target_ranks = self.resource.get_ranks_by_uuid(engine_uuid)
 
         if not self.has_connector:
             # get output only from a single worker (output_rank)
@@ -367,8 +92,7 @@ class WorkerController:
                 args=(scheduler_output, ),
                 unique_reply_rank=self.output_rank,
                 non_block=non_block,
-                timeout=envs.VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS,
-                target_ranks=target_ranks)
+                timeout=envs.VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS)
             return output
 
         # get output from all workers
@@ -376,8 +100,7 @@ class WorkerController:
             "execute_model",
             args=(scheduler_output, ),
             non_block=non_block,
-            timeout=envs.VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS,
-            target_ranks=target_ranks)
+            timeout=envs.VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS)
 
         # aggregate all workers output to a single output
         if non_block:
@@ -397,8 +120,7 @@ class WorkerController:
                        args: tuple = (),
                        kwargs: Optional[dict] = None,
                        non_block: bool = False,
-                       unique_reply_rank: Optional[int] = None,
-                       target_ranks: Optional[int] = None) -> list[Any]:
+                       unique_reply_rank: Optional[int] = None) -> list[Any]:
         if self.is_failed:
             raise RuntimeError("Executor failed.")
 
@@ -414,19 +136,11 @@ class WorkerController:
             else:
                 send_method = cloudpickle.dumps(
                     method, protocol=pickle.HIGHEST_PROTOCOL)
-            for rank in target_ranks:
-                self.rpc_broadcast_mq.enqueue(
-                    (send_method, args, kwargs, rank))
+            self.rpc_broadcast_mq.enqueue(
+                (send_method, args, kwargs, unique_reply_rank))
 
-            # workers = (self.workers[unique_reply_rank],
-            #            ) if unique_reply_rank is not None else self.worker
-            if unique_reply_rank is not None:
-                workers = [self.workers[unique_reply_rank]]
-            elif target_ranks is not None:
-                workers = [self.workers[rank] for rank in target_ranks]
-            else:
-                workers = self.workers
-
+            workers = (self.workers[unique_reply_rank],
+                       ) if unique_reply_rank is not None else self.workers
             responses = []
 
             def get_response(w: WorkerProcHandle,
@@ -507,15 +221,14 @@ class WorkerController:
         self.rpc_broadcast_mq = None
 
     def check_health(self) -> None:
-        """Check health of all workers."""
         self.collective_rpc("check_health", timeout=10)
         return
 
     @property
     def max_concurrent_batches(self) -> int:
-        # For empty workers, return 1 as default
-        # This will be overridden when engines are created
-        return 1
+        if self.scheduler_config.async_scheduling:
+            return 2
+        return self.parallel_config.pipeline_parallel_size
 
     def _get_output_rank(self) -> int:
         # Only returns ModelRunnerOutput from TP rank=0 and PP rank=-1
@@ -536,8 +249,6 @@ class UnreadyWorkerProcHandle:
     proc: BaseProcess
     rank: int
     ready_pipe: Connection
-    parent_send: Connection
-    parent_recv: Connection
     death_writer: Optional[Connection] = None
 
 
@@ -546,9 +257,6 @@ class WorkerProcHandle:
     proc: BaseProcess
     rank: int
     worker_response_mq: MessageQueue  # The worker process writes to this MQ
-    parent_send: Connection
-    parent_recv: Connection
-    engineUUID: str | None = None
     death_writer: Optional[Connection] = None
 
     @classmethod
@@ -559,8 +267,6 @@ class WorkerProcHandle:
             proc=unready_handle.proc,
             rank=unready_handle.rank,
             worker_response_mq=worker_response_mq,
-            parent_send=unready_handle.parent_send,
-            parent_recv=unready_handle.parent_recv,
             death_writer=unready_handle.death_writer,
         )
 
@@ -572,15 +278,15 @@ class WorkerProc:
 
     def __init__(
         self,
-        vllm_config: DummyVllmConfig,
+        vllm_config: VllmConfig,
         local_rank: int,
         rank: int,
         distributed_init_method: str,
         input_shm_handle: Handle,
     ):
-
         self.rank = rank
         wrapper = WorkerWrapperBase(vllm_config=vllm_config, rpc_rank=rank)
+        # TODO: move `init_worker` to executor level as a collective rpc call
         all_kwargs: list[dict] = [
             {} for _ in range(vllm_config.parallel_config.world_size)
         ]
@@ -595,16 +301,28 @@ class WorkerProc:
         }
         wrapper.init_worker(all_kwargs)
         self.worker = wrapper
-        logger.info(f"wrapper.init_worker {rank} completed")
-        logger.info(wrapper.worker)
+
+        pp_size = vllm_config.parallel_config.pipeline_parallel_size
+        tp_size = vllm_config.parallel_config.tensor_parallel_size
+        pp_str = f"PP{rank // tp_size}" if pp_size > 1 else ""
+        tp_str = f"TP{rank % tp_size}" if tp_size > 1 else ""
+        suffix = f"{pp_str}{'_' if pp_str and tp_str else ''}{tp_str}"
+        process_name = "VllmWorker"
+        if suffix:
+            set_process_title(suffix, append=True)
+            process_name = f"{process_name} {suffix}"
+        decorate_logs(process_name)
 
         # Initialize MessageQueue for receiving SchedulerOutput
         self.rpc_broadcast_mq = MessageQueue.create_from_handle(
-            input_shm_handle, rank)
+            input_shm_handle, self.worker.rank)
 
         # Initializes a message queue for sending the model output
         self.worker_response_mq = MessageQueue(1, 1)
+
+        # Initialize device and loads weights
         self.worker.init_device()
+        self.worker.load_model()
 
     @staticmethod
     def make_worker_process(
@@ -621,10 +339,6 @@ class WorkerProc:
         # Create death pipe to detect parent process exit
         death_reader, death_writer = context.Pipe(duplex=False)
 
-        # Control channel: parent -> worker (send), worker -> parent (recv)
-        child_recv, parent_send, = Pipe(duplex=False)
-        parent_recv, child_send = Pipe(duplex=False)
-
         process_kwargs = {
             "vllm_config": vllm_config,
             "local_rank": local_rank,
@@ -633,8 +347,6 @@ class WorkerProc:
             "input_shm_handle": input_shm_handle,
             "ready_pipe": (reader, writer),
             "death_pipe": death_reader,
-            "child_recv": child_recv,
-            "child_send": child_send
         }
         # Run EngineCore busy loop in background process.
         proc = context.Process(target=WorkerProc.worker_main,
@@ -646,14 +358,7 @@ class WorkerProc:
         writer.close()
         # Keep death_writer open in parent - when parent exits,
         # death_reader in child will get EOFError
-        return UnreadyWorkerProcHandle(proc, rank, reader, parent_send, parent_recv, death_writer)
-
-    def reset_to_empty_state(self):
-        """Reset this worker to empty state (unload model)."""
-        if hasattr(self, 'worker') and self.worker is not None:
-            # Unload model and reset worker
-            self.worker = None
-            logger.info(f"Worker {self.rank} reset to empty state")
+        return UnreadyWorkerProcHandle(proc, rank, reader, death_writer)
 
     @staticmethod
     def wait_for_ready(
@@ -705,8 +410,6 @@ class WorkerProc:
     def worker_main(*args, **kwargs):
         """ Worker initialization and execution loops.
         This runs a background process """
-        logger = init_logger("worker")
-        logger.info(f"Worker {os.getpid()} started")
 
         # Signal handler used for graceful termination.
         # SystemExit exception is only raised once to allow this and worker
@@ -715,8 +418,6 @@ class WorkerProc:
 
         def signal_handler(signum, frame):
             nonlocal shutdown_requested
-            # Mark unused parameters
-            _ = signum, frame
             if not shutdown_requested:
                 shutdown_requested = True
                 raise SystemExit()
@@ -730,10 +431,6 @@ class WorkerProc:
         reader, ready_writer = kwargs.pop("ready_pipe")
         death_pipe = kwargs.pop("death_pipe", None)
 
-        child_recv = kwargs.pop("child_recv", None)
-        child_send = kwargs.pop("child_send", None)
-
-        logger.info(f"Worker {os.getpid()}")
         # Start death monitoring thread if death_pipe is provided
         if death_pipe is not None:
 
@@ -756,13 +453,9 @@ class WorkerProc:
 
         try:
             reader.close()
-
-            # Redirect subprocess output to log files
-
-            logger.info(f"Worker{kwargs['local_rank']} going to be set up")
-            # Only create worker if vllm_config is provided
             worker = WorkerProc(*args, **kwargs)
 
+            # Send READY once we know everything is loaded
             ready_writer.send({
                 "status":
                 WorkerProc.READY_STR,
@@ -770,13 +463,14 @@ class WorkerProc:
                 worker.worker_response_mq.export_handle(),
             })
 
+            # Ensure message queues are ready. Will deadlock if re-ordered.
+            # Must be kept consistent with the Executor
             worker.rpc_broadcast_mq.wait_until_ready()
             worker.worker_response_mq.wait_until_ready()
             ready_writer.close()
             ready_writer = None
 
-            # Start minimal busy loop for empty worker
-            worker.worker_busy_loop([child_send, child_recv])
+            worker.worker_busy_loop()
 
         except Exception:
             # NOTE: if an Exception arises in busy_loop, we send
@@ -807,42 +501,17 @@ class WorkerProc:
         SUCCESS = auto()
         FAILURE = auto()
 
-    def worker_busy_loop(self, pipes: List[Connection]):
+    def worker_busy_loop(self):
         """Main busy loop for Multiprocessing Workers"""
-        logger = init_logger(f"Worker {os.getpid()}")
-        child_send, child_recv = pipes
         while True:
-            if child_recv.poll(timeout=1.0):  # non-blocking check
-                method, args, kwargs, output_rank = child_recv.recv()
-                logger.info(
-                    f"{os.getpid()} Worker received pipe message: {method}")
+            method, args, kwargs, output_rank = self.rpc_broadcast_mq.dequeue()
+
+            try:
                 if isinstance(method, str):
                     func = getattr(self.worker, method)
                 elif isinstance(method, bytes):
                     func = partial(cloudpickle.loads(method), self.worker)
                 output = func(*args, **kwargs)
-                child_send.send(output)
-            try:
-                # logger.info(
-                #     f"{os.getpid()} RPC poll")
-                method, args, kwargs, output_rank = self.rpc_broadcast_mq.dequeue(
-                    timeout=0)
-                output = None
-                if isinstance(method, str):
-                    func = getattr(self.worker, method)
-                elif isinstance(method, bytes):
-                    func = partial(cloudpickle.loads(method), self.worker)
-                # make sure the message is targeted at the specific worker
-                if self.rank == output_rank:
-                    output = func(*args, **kwargs)
-
-                if output_rank is None or self.rank == output_rank:
-                    self.worker_response_mq.enqueue(
-                        (WorkerProc.ResponseStatus.SUCCESS, output))
-            except TimeoutError:
-                # This is not an error. It simply means the queue was empty.
-                # We do nothing and let the loop continue.
-                pass
             except Exception as e:
                 # Notes have been introduced in python 3.11
                 if hasattr(e, "add_note"):
@@ -854,3 +523,7 @@ class WorkerProc:
                     self.worker_response_mq.enqueue(
                         (WorkerProc.ResponseStatus.FAILURE, str(e)))
                 continue
+
+            if output_rank is None or self.rank == output_rank:
+                self.worker_response_mq.enqueue(
+                    (WorkerProc.ResponseStatus.SUCCESS, output))

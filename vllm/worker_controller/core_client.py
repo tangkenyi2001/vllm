@@ -36,7 +36,7 @@ from vllm.v1.engine.utils import (CoreEngineActorManager,
                                   CoreEngineProcManager, launch_core_engines)
 from vllm.v1.executor.abstract import Executor
 from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder, bytestr
-from multiprocessing.connection import Connection
+
 logger = init_logger(__name__)
 
 AnyFuture = Union[asyncio.Future[Any], Future[Any]]
@@ -84,8 +84,6 @@ class EngineCoreClient(ABC):
     @staticmethod
     def make_async_mp_client(
         vllm_config: VllmConfig,
-        parentsendpipes: Connection,
-        parentsrecvpipes: Connection,
         executor_class: type[Executor],
         log_stats: bool,
         client_addresses: Optional[dict[str, str]] = None,
@@ -93,7 +91,7 @@ class EngineCoreClient(ABC):
         client_index: int = 0,
     ) -> "MPClient":
         parallel_config = vllm_config.parallel_config
-        client_args = (vllm_config, parentsendpipes, parentsrecvpipes, executor_class, log_stats,
+        client_args = (vllm_config, executor_class, log_stats,
                        client_addresses, client_count, client_index)
         if parallel_config.data_parallel_size > 1:
             if parallel_config.data_parallel_external_lb:
@@ -761,7 +759,6 @@ class AsyncMPClient(MPClient):
 
     def __init__(self,
                  vllm_config: VllmConfig,
-
                  executor_class: type[Executor],
                  log_stats: bool,
                  client_addresses: Optional[dict[str, str]] = None,

@@ -10,7 +10,7 @@ from typing import Any, Optional, Union
 
 import numpy as np
 import torch
-
+from multiprocessing.connection import Connection
 import vllm.envs as envs
 from vllm.config import ModelConfig, VllmConfig
 from vllm.engine.arg_utils import AsyncEngineArgs
@@ -33,7 +33,7 @@ from vllm.usage.usage_lib import UsageContext
 from vllm.utils import (Device, as_list, cancel_task_threadsafe, cdiv,
                         deprecate_kwargs)
 from vllm.v1.engine import EngineCoreRequest
-from vllm.v1.engine.core_client import EngineCoreClient
+from vllm.worker_controller.core_client import EngineCoreClient
 from vllm.v1.engine.exceptions import EngineDeadError, EngineGenerateError
 from vllm.v1.engine.output_processor import (OutputProcessor,
                                              RequestOutputCollector)
@@ -52,6 +52,8 @@ class AsyncLLM(EngineClient):
     def __init__(
         self,
         vllm_config: VllmConfig,
+        parentsendpipes: Connection,
+        parentsrecvpipes: Connection,
         executor_class: type[Executor],
         log_stats: bool,
         usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
@@ -122,6 +124,8 @@ class AsyncLLM(EngineClient):
         # EngineCore (starts the engine in background process).
         self.engine_core = EngineCoreClient.make_async_mp_client(
             vllm_config=vllm_config,
+            parentsendpipes=parentsendpipes,
+            parentsrecvpipes=parentsrecvpipes,
             executor_class=executor_class,
             log_stats=self.log_stats,
             client_addresses=client_addresses,
@@ -176,6 +180,8 @@ class AsyncLLM(EngineClient):
     def from_vllm_config(
             cls,
             vllm_config: VllmConfig,
+            parentsendpipes: Connection,
+            parentsrecvpipes: Connection,
             start_engine_loop: bool = True,
             usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
             stat_loggers: Optional[list[StatLoggerFactory]] = None,
@@ -196,6 +202,8 @@ class AsyncLLM(EngineClient):
         # Create the LLMEngine.
         return cls(
             vllm_config=vllm_config,
+            parentsendpipes=parentsendpipes,
+            parentsrecvpipes=parentsrecvpipes,
             executor_class=Executor.get_class(vllm_config),
             start_engine_loop=start_engine_loop,
             stat_loggers=stat_loggers,

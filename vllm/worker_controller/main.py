@@ -54,13 +54,14 @@ def create_engine(request: EngineCreateRequest):
             request.vllm_config, VllmConfig) else VllmConfig(**request.vllm_config)
 
         # Create engine: assign workers and load config
-        worker_controller.create(vllm_config, request.engine_uuid)
+        message = worker_controller.create(vllm_config, request.engine_uuid)
 
         engine_info = worker_controller.engines[request.engine_uuid]
         return {
             "message": f"Engine {request.engine_uuid} created successfully",
             "assigned_workers": engine_info["workers"],
-            "world_size": vllm_config.parallel_config.world_size
+            "world_size": vllm_config.parallel_config.world_size,
+            "message": message
         }
     except Exception as e:
         logger.error(f"Failed to create engine {request.engine_uuid}: {e}")

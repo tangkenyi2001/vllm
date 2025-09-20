@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from functools import partial
 from http import HTTPStatus
 from typing import Annotated, Any, Callable, Optional
-
+from multiprocessing.connection import Connection
 import prometheus_client
 import pydantic
 import regex as re
@@ -178,6 +178,8 @@ async def build_async_engine_client(
     async with build_async_engine_client_from_engine_args(
             engine_args,
             args.vllmconfig,
+            args.parentsendpipes,
+            args.parentsrecvpipes,
             usage_context=usage_context,
             disable_frontend_multiprocessing=disable_frontend_multiprocessing,
             client_config=client_config,
@@ -189,6 +191,8 @@ async def build_async_engine_client(
 async def build_async_engine_client_from_engine_args(
     engine_args: AsyncEngineArgs,
     vllmconfig: VllmConfig,
+    parentsendpipes: Connection,
+    parentsrecvpipes: Connection,
     *,
     usage_context: UsageContext = UsageContext.OPENAI_API_SERVER,
     disable_frontend_multiprocessing: bool = False,
@@ -203,8 +207,8 @@ async def build_async_engine_client_from_engine_args(
     """
 
     # Create the EngineConfig (determines if we can use V1).
-    vllm_config = engine_args.create_engine_config(usage_context=usage_context)
-    # vllm_config = vllmconfig
+    # vllm_config = engine_args.create_engine_config(usage_context=usage_context)
+    vllm_config = vllmconfig
     # V1 AsyncLLM.
     if envs.VLLM_USE_V1:
         if disable_frontend_multiprocessing:
@@ -212,7 +216,7 @@ async def build_async_engine_client_from_engine_args(
                 "V1 is enabled, but got --disable-frontend-multiprocessing. "
                 "To disable frontend multiprocessing, set VLLM_USE_V1=0.")
 
-        from vllm.v1.engine.async_llm import AsyncLLM
+        from vllm.worker_controller.async_engine import AsyncLLM
         async_llm: Optional[AsyncLLM] = None
         client_count = client_config.pop(
             "client_count") if client_config else 1
@@ -221,6 +225,8 @@ async def build_async_engine_client_from_engine_args(
         try:
             async_llm = AsyncLLM.from_vllm_config(
                 vllm_config=vllm_config,
+                parentsendpipes=parentsendpipes,
+                parentsrecvpipes=parentsrecvpipes,
                 usage_context=usage_context,
                 enable_log_requests=engine_args.enable_log_requests,
                 disable_log_stats=engine_args.disable_log_stats,
