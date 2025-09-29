@@ -56,7 +56,7 @@ def create_engine(request: EngineCreateRequest):
         # Create engine: assign workers and load config
         worker_controller.create(vllm_config, request.engine_uuid)
 
-        engine_info = worker_controller.engines[request.engine_uuid]
+        engine_info = worker_controller.executor.engines[request.engine_uuid]
         return {
             "message": f"Engine {request.engine_uuid} created successfully",
             "assigned_workers": engine_info["workers"],
@@ -97,23 +97,6 @@ def delete_engine(engine_uuid: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@app.get("/workers/status", response_model=WorkerStatusResponse)
-def get_worker_status():
-    """Get current worker and engine status."""
-    return WorkerStatusResponse(
-        available_workers=worker_controller.available_workers,
-        total_workers=worker_controller.world_size,
-        resource_status=worker_controller.resource.status(),
-        active_engines={
-            engine_id: {
-                "workers": info["workers"],
-                "world_size": info["vllm_config"].parallel_config.world_size
-            }
-            for engine_id, info in worker_controller.engines.items()
-        }
-    )
-
-
 @app.post("/engines/{engine_uuid}/execute")
 def execute_model(engine_uuid: str, request: EngineExecuteRequest):
     """Execute model on the specified engine."""
@@ -131,21 +114,6 @@ def execute_model(engine_uuid: str, request: EngineExecuteRequest):
     except Exception as e:
         logger.error(f"Failed to execute model on engine {engine_uuid}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/engines")
-def list_engines():
-    """List all active engines."""
-    return {
-        "engines": {
-            engine_id: {
-                "workers": info["workers"],
-                "world_size": info["vllm_config"].parallel_config.world_size,
-                "model": info["vllm_config"].model_config.model
-            }
-            for engine_id, info in worker_controller.engines.items()
-        }
-    }
 
 
 @app.get("/engines/{engine_uuid}")

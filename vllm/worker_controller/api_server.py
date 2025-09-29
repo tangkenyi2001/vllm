@@ -177,7 +177,7 @@ async def build_async_engine_client(
 
     async with build_async_engine_client_from_engine_args(
             engine_args,
-            args.vllmconfig,
+            args,
             usage_context=usage_context,
             disable_frontend_multiprocessing=disable_frontend_multiprocessing,
             client_config=client_config,
