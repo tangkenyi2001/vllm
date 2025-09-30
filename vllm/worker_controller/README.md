@@ -10,6 +10,6 @@ We will initialise the workecontroller with a dummy vllmconfig `vllm.worker_cont
 `create`
 We will first check using the `Resource Allocater` whether we have enough GPUs to accomodate the request, we will create a process that `run_api_server` to listen on a different port. The `run_api_server` will create an engine which creates a executor.
 
-**Not yet implemented** We want to pass in the message queue into the `run_api_server` such that the executor we create will use the message queue to communicate with our already created worker processes.
+**Not yet implemented** We want to pass in the message queue into the `run_api_server` such that the executor we create will use the message queue to communicate with our already created worker processes. After communication is set up, we will then load the model in the worker process.
 
 ## 
