@@ -169,6 +169,8 @@ async def build_async_engine_client(
 
     # Context manager to handle engine_client lifecycle
     # Ensures everything is shutdown and cleaned up on error/exit
+
+    # We need to somehow find a way to pass in the vllmconfig into this to create the engine arguments
     engine_args = AsyncEngineArgs.from_cli_args(args)
 
     if disable_frontend_multiprocessing is None:
@@ -188,8 +190,7 @@ async def build_async_engine_client(
 @asynccontextmanager
 async def build_async_engine_client_from_engine_args(
     engine_args: AsyncEngineArgs,
-    vllmconfig: VllmConfig,
-    *,
+    args: Namespace,
     usage_context: UsageContext = UsageContext.OPENAI_API_SERVER,
     disable_frontend_multiprocessing: bool = False,
     client_config: Optional[dict[str, Any]] = None,
@@ -203,8 +204,8 @@ async def build_async_engine_client_from_engine_args(
     """
 
     # Create the EngineConfig (determines if we can use V1).
-    vllm_config = engine_args.create_engine_config(usage_context=usage_context)
-    # vllm_config = vllmconfig
+    # vllm_config = engine_args.create_engine_config(usage_context=usage_context)
+    vllm_config = args.vllmconfig
     # V1 AsyncLLM.
     if envs.VLLM_USE_V1:
         if disable_frontend_multiprocessing:
@@ -212,7 +213,7 @@ async def build_async_engine_client_from_engine_args(
                 "V1 is enabled, but got --disable-frontend-multiprocessing. "
                 "To disable frontend multiprocessing, set VLLM_USE_V1=0.")
 
-        from vllm.v1.engine.async_llm import AsyncLLM
+        from vllm.worker_controller.async_llm import AsyncLLM
         async_llm: Optional[AsyncLLM] = None
         client_count = client_config.pop(
             "client_count") if client_config else 1
@@ -221,6 +222,7 @@ async def build_async_engine_client_from_engine_args(
         try:
             async_llm = AsyncLLM.from_vllm_config(
                 vllm_config=vllm_config,
+                args=args,
                 usage_context=usage_context,
                 enable_log_requests=engine_args.enable_log_requests,
                 disable_log_stats=engine_args.disable_log_stats,

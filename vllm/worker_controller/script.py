@@ -1,6 +1,6 @@
 
 from vllm import LLM, SamplingParams, config
-from vllm_config import DummyModelConfig, DummyVllmConfig, CacheConfig, ParallelConfig
+from vllm.worker_controller.config.vllm_config import DummyModelConfig, DummyVllmConfig, CacheConfig, ParallelConfig
 
 # modelConfig = DummyModelConfig("dummy", enforce_eager=True)
 # cacheConfig = CacheConfig(gpu_memory_utilization=0.9)

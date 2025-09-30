@@ -39,17 +39,17 @@ from vllm.v1.executor.abstract import FailureCallback
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.worker.worker_base import WorkerWrapperBase
 from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
-from vllm_config import DummyModelConfig, DummyVllmConfig, CacheConfig, ParallelConfig
+from vllm.worker_controller.config.vllm_config import DummyModelConfig, DummyVllmConfig, CacheConfig, ParallelConfig
 from vllm.engine.llm_engine import LLMEngine
 
 from multiprocessing import Pipe, Process
 from typing import List
 from vllm.entrypoints.openai.cli_args import make_arg_parser
-from vllm.worker_controller.api_server import run_server
+from vllm.worker_controller.entrypoint.api_server import run_server
 from vllm.utils import (Device, FlexibleArgumentParser, decorate_logs,
                         get_open_zmq_ipc_path, is_valid_ipv6_address,
                         set_ulimit)
-from vllm.worker_controller.executor import ModifiedExecutor
+from vllm.worker_controller.executor.empty_executor import EmptyExecutor
 import uvloop
 logger = init_logger(__name__)
 logging.basicConfig(
@@ -118,11 +118,21 @@ class ResourceAllocator:
 
 class WorkerController:
 
-    def __init__(self, vllm_config: VllmConfig) -> None:
-        # Executor will create the empty worker processes
-        self.executor = ModifiedExecutor(vllm_config=vllm_config)
+    def __init__(self) -> None:
+        # Modified Executor will create the empty worker processes and return the pipes
+        modelConfig = DummyModelConfig("dummy", enforce_eager=True)
+        cacheConfig = CacheConfig(gpu_memory_utilization=0.9)
+        parallelConfig = ParallelConfig(
+            world_size=2, worker_cls='vllm.worker_controller.gpu_worker.Worker')
+        # parallelConfig = ParallelConfig(
+        #     world_size=2)
+        dummyvllmConfig = DummyVllmConfig(
+            model_config=modelConfig, cache_config=cacheConfig, parallel_config=parallelConfig)
+
+        self.executor = EmptyExecutor(vllm_config=dummyvllmConfig)
         self.resourceAllocater = ResourceAllocator(
-            numberOfGPUs=vllm_config.parallel_config.world_size)
+            numberOfGPUs=dummyvllmConfig.parallel_config.world_size)
+        self.rpc_broadcast_mq = self.executor.rpc_broadcast_mq
 
     # Create API server using our own executor
     def create(self, vllm_config: VllmConfig, engineUUID: str):
@@ -137,10 +147,11 @@ class WorkerController:
         parser = make_arg_parser(parser)
         args = parser.parse_args()
 
-        args.executor = self.executor
+        args.rpc_broadcast_mq = self.executor.rpc_broadcast_mq
         args.assigned_ranks = assigned_ranks
         args.vllmconfig = vllm_config
         args.port = port
+
         # should pass the executor in to run,
         # the executor also has the pipes available
 

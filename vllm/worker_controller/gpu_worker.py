@@ -32,7 +32,7 @@ from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT, ModelRunnerOutput
 from vllm.v1.utils import report_usage_stats
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.worker_base import WorkerBase
-from vllm.worker_controller.vllm_config import DummyVllmConfig
+from vllm.worker_controller.config.vllm_config import DummyVllmConfig
 
 logger = init_logger(__name__)
 
