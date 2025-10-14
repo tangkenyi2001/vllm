@@ -5,7 +5,8 @@
         "model":"facebook/opt-125m"
     },
     "parallel_config": {
-        "world_size":1
+        "world_size":1,
+      "distributed_executor_backend":"distributed_system"
     }
   }
 }

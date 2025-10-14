@@ -30,6 +30,7 @@ def read_root():
 @app.post("/engines")
 def create_engine(request: EngineCreateRequest):
     """Create a new engine by assigning workers and loading vllm_config."""
+    print(request)
     try:
         # Convert dict to VllmConfig object if needed
         vllm_config = request.vllm_config if isinstance(
@@ -38,10 +39,8 @@ def create_engine(request: EngineCreateRequest):
         # Create engine: assign workers and load config
         worker_controller.create(vllm_config, request.engine_uuid)
 
-        engine_info = worker_controller.executor.engines[request.engine_uuid]
         return {
             "message": f"Engine {request.engine_uuid} created successfully",
-            "assigned_workers": engine_info["workers"],
             "world_size": vllm_config.parallel_config.world_size
         }
     except Exception as e:

@@ -445,7 +445,7 @@ class MPClient(EngineCoreClient):
                     "stats_update_address")
             else:
                 # Engines are managed by this client.
-                with launch_core_engines(vllm_config, args, executor_class,
+                with launch_core_engines(vllm_config, executor_class,
                                          log_stats) as (engine_manager,
                                                         coordinator,
                                                         addresses):

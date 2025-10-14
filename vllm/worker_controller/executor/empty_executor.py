@@ -715,39 +715,14 @@ class WorkerProc:
     def worker_busy_loop(self, pipes: List[Connection]):
         """Main busy loop for Multiprocessing Workers"""
         logger = init_logger(f"Worker {os.getpid()}")
-        child_send, child_recv = pipes
         while True:
-            if child_recv.poll(timeout=1.0):  # non-blocking check
-                method, args, kwargs, output_rank = child_recv.recv()
-                logger.info(
-                    f"{os.getpid()} Worker received pipe message: {method}")
+            method, args, kwargs, output_rank = self.rpc_broadcast_mq.dequeue()
+            try:
                 if isinstance(method, str):
                     func = getattr(self.worker, method)
                 elif isinstance(method, bytes):
                     func = partial(cloudpickle.loads(method), self.worker)
                 output = func(*args, **kwargs)
-                child_send.send(output)
-            try:
-                # logger.info(
-                #     f"{os.getpid()} RPC poll")
-                method, args, kwargs, output_rank = self.rpc_broadcast_mq.dequeue(
-                    timeout=0)
-                output = None
-                if isinstance(method, str):
-                    func = getattr(self.worker, method)
-                elif isinstance(method, bytes):
-                    func = partial(cloudpickle.loads(method), self.worker)
-                # make sure the message is targeted at the specific worker
-                if self.rank == output_rank:
-                    output = func(*args, **kwargs)
-
-                if output_rank is None or self.rank == output_rank:
-                    self.worker_response_mq.enqueue(
-                        (WorkerProc.ResponseStatus.SUCCESS, output))
-            except TimeoutError:
-                # This is not an error. It simply means the queue was empty.
-                # We do nothing and let the loop continue.
-                pass
             except Exception as e:
                 # Notes have been introduced in python 3.11
                 if hasattr(e, "add_note"):
@@ -759,3 +734,7 @@ class WorkerProc:
                     self.worker_response_mq.enqueue(
                         (WorkerProc.ResponseStatus.FAILURE, str(e)))
                 continue
+
+            if output_rank is None or self.rank == output_rank:
+                self.worker_response_mq.enqueue(
+                    (WorkerProc.ResponseStatus.SUCCESS, output))

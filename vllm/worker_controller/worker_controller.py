@@ -61,19 +61,20 @@ logging.basicConfig(
 
 class ResourceAllocator:
     def __init__(self, numberOfGPUs: int, start_port: int = 8001):
+        # rank -> uid or 0 (free)
         self.resources = {i: 0 for i in range(numberOfGPUs)}
         self.uuid_to_port = {}  # uid -> port
-        self.rank_to_uid = {}  # rank -> uid
+        self.rank_to_uid = {}   # rank -> uid
         self.start_port = start_port
         self.next_port = start_port
 
     def assign(self, num: int, uuid: str):
-        if uuid in self.port_map:
-            # UID already has a port
-            port = self.port_map[uuid]
+        """Assign `num` free GPUs to a given UUID and allocate a port."""
+        if uuid in self.uuid_to_port:
+            port = self.uuid_to_port[uuid]
         else:
             port = self.next_port
-            self.port_map[uuid] = port
+            self.uuid_to_port[uuid] = port
             self.next_port += 1
 
         assigned_ranks = []
@@ -84,7 +85,7 @@ class ResourceAllocator:
                 assigned_ranks.append(rank)
 
         if len(assigned_ranks) < num:
-            # Rollback partial assignment
+            # Roll back partial assignment
             for rank in assigned_ranks:
                 self.resources[rank] = 0
                 del self.rank_to_uid[rank]
@@ -100,19 +101,18 @@ class ResourceAllocator:
 
     def get_port_by_uuid(self, uid: str):
         """Return the port assigned to the specified UID."""
-        return self.port_map.get(uid)
+        return self.uuid_to_port.get(uid)
 
     def release_by_uuid(self, uid: str):
-        """Release all ranks assigned to this UID."""
+        """Release all ranks and the port assigned to this UID."""
         released_ranks = []
-        for rank, val in self.resources.items():
+        for rank, val in list(self.resources.items()):
             if val == uid:
                 self.resources[rank] = 0
-                del self.rank_to_uid[rank]
+                self.rank_to_uid.pop(rank, None)
                 released_ranks.append(rank)
-        if uid in self.port_map:
-            port = self.port_map[uid]
-            del self.port_map[uid]
+
+        port = self.uuid_to_port.pop(uid, None)
         return released_ranks, port
 
 
@@ -150,6 +150,12 @@ class WorkerController:
         args.rpc_broadcast_mq = self.executor.rpc_broadcast_mq
         args.assigned_ranks = assigned_ranks
         args.vllmconfig = vllm_config
+
+        import vllm.worker_controller.globalvar.global_var as gv
+        gv.VLLM_CONFIG = vllm_config
+        print(gv.VLLM_CONFIG)
+        gv.RPC_MQ = self.executor.rpc_broadcast_mq
+        gv.WORKERS = self.executor.workers
         args.port = port
 
         # should pass the executor in to run,

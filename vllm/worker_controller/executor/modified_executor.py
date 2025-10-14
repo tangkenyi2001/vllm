@@ -44,6 +44,9 @@ class ModifiedExecutor(Executor):
     supports_pp: bool = True
 
     def _init_executor(self) -> None:
+        import vllm.worker_controller.globalvar.global_var as gv
+        self.rpc_broadcast_mq = gv.RPC_MQ
+        logger.info(f"MQ in executor, {self.rpc_broadcast_mq}")
         # Call self.shutdown at exit to clean up
         # and ensure workers will be terminated.
         self._finalizer = weakref.finalize(self, self.shutdown)
@@ -66,55 +69,58 @@ class ModifiedExecutor(Executor):
         # Multiprocessing-based executor does not support multi-node setting.
         # Since it only works for single node, we can use the loopback address
         # get_loopback_ip() for communication.
-        distributed_init_method = get_distributed_init_method(
-            get_loopback_ip(), get_open_port())
+        # distributed_init_method = get_distributed_init_method(
+        #     get_loopback_ip(), get_open_port())
 
         # Initialize worker and set up message queues for SchedulerOutputs
         # and ModelRunnerOutputs
-        max_chunk_bytes = envs.VLLM_MQ_MAX_CHUNK_BYTES_MB * 1024 * 1024
-        self.rpc_broadcast_mq = MessageQueue(self.world_size,
-                                             self.world_size,
-                                             max_chunk_bytes=max_chunk_bytes)
-        scheduler_output_handle = self.rpc_broadcast_mq.export_handle()
+        # max_chunk_bytes = envs.VLLM_MQ_MAX_CHUNK_BYTES_MB * 1024 * 1024
+        # self.rpc_broadcast_mq = MessageQueue(self.world_size,
+        #                                      self.world_size,
+        #                                      max_chunk_bytes=max_chunk_bytes)
+        # scheduler_output_handle = self.rpc_broadcast_mq.export_handle()
 
         # Create workers
-        unready_workers: list[UnreadyWorkerProcHandle] = []
-        success = False
-        try:
-            for rank in range(self.world_size):
-                unready_workers.append(
-                    WorkerProc.make_worker_process(
-                        vllm_config=self.vllm_config,
-                        local_rank=rank,
-                        rank=rank,
-                        distributed_init_method=distributed_init_method,
-                        input_shm_handle=scheduler_output_handle,
-                    ))
+        # unready_workers: list[UnreadyWorkerProcHandle] = []
+        # success = False
+        # try:
+        #     for rank in range(self.world_size):
+        #         unready_workers.append(
+        #             WorkerProc.make_worker_process(
+        #                 vllm_config=self.vllm_config,
+        #                 local_rank=rank,
+        #                 rank=rank,
+        #                 distributed_init_method=distributed_init_method,
+        #                 input_shm_handle=scheduler_output_handle,
+        #             ))
 
-            # Workers must be created before wait_for_ready to avoid
-            # deadlock, since worker.init_device() does a device sync.
-            self.workers = WorkerProc.wait_for_ready(unready_workers)
+        #     # Workers must be created before wait_for_ready to avoid
+        #     # deadlock, since worker.init_device() does a device sync.
+        #     self.workers = WorkerProc.wait_for_ready(unready_workers)
 
-            # Ensure message queues are ready. Will deadlock if re-ordered
-            # Must be kept consistent with the WorkerProc.
-            self.rpc_broadcast_mq.wait_until_ready()
-            for w in self.workers:
-                w.worker_response_mq.wait_until_ready()
+        #     # Ensure message queues are ready. Will deadlock if re-ordered
+        #     # Must be kept consistent with the WorkerProc.
+        #     self.rpc_broadcast_mq.wait_until_ready()
+        #     for w in self.workers:
+        #         w.worker_response_mq.wait_until_ready()
 
-            self.start_worker_monitor()
-            success = True
-        finally:
-            if not success:
-                # Clean up the worker procs if there was a failure.
-                # Close death_writers first to signal workers to exit
-                for uw in unready_workers:
-                    if uw.death_writer is not None:
-                        uw.death_writer.close()
-                self._ensure_worker_termination(
-                    [uw.proc for uw in unready_workers])
+        #     self.start_worker_monitor()
+        #     success = True
+        # finally:
+        #     if not success:
+        #         # Clean up the worker procs if there was a failure.
+        #         # Close death_writers first to signal workers to exit
+        #         for uw in unready_workers:
+        #             if uw.death_writer is not None:
+        #                 uw.death_writer.close()
+        #         self._ensure_worker_termination(
+        #             [uw.proc for uw in unready_workers])
 
         # For pipeline parallel, we use a thread pool for asynchronous
         # execute_model.
+
+        import vllm.worker_controller.globalvar.global_var as gv
+        self.workers = gv.WORKERS
         if self.max_concurrent_batches > 1:
             # Note: must use only 1 IO thread to keep dequeue sequence
             # from the response queue
@@ -232,7 +238,7 @@ class ModifiedExecutor(Executor):
                 status, result = w.worker_response_mq.dequeue(
                     timeout=dequeue_timeout, cancel=cancel_event)
 
-                if status != WorkerProc.ResponseStatus.SUCCESS:
+                if status.value != WorkerProc.ResponseStatus.SUCCESS.value:
                     raise RuntimeError(
                         f"Worker failed with error '{result}', please check the"
                         " stack trace above for the root cause")

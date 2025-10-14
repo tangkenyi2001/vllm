@@ -197,10 +197,6 @@ class Worker(WorkerBase):
         # Set random seed.
         set_random_seed(self.model_config.seed)
 
-        self.model_runner: GPUModelRunner | None = None
-        logger.info(
-            f"PID {os.getpid()} The Model Runner is {self.model_runner}")
-
         # report_usage_stats requires hf.architecture
         # if self.rank == 0:
         #     # If usage stat is enabled, collect relevant info.
@@ -256,7 +252,7 @@ class Worker(WorkerBase):
         logger.info(f"{os.getpid()} LOAD MODEL CALLED")
         logger.info(f"{vllmconfig}")
         # create GPUModelRunner
-        self.model_runner = GPUModelRunner(
+        self.model_runner: GPUModelRunner = GPUModelRunner(
             vllmconfig, self.device)
         eep_scale_up = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
         with self._maybe_get_memory_pool_context(tag="weights"):

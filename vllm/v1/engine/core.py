@@ -75,14 +75,21 @@ class EngineCore:
                     VLLM_VERSION, vllm_config)
 
         self.log_stats = log_stats
-
+        import vllm.worker_controller.globalvar.global_var as gv
+        # pass the MQ in
+        logger.info(f"RPC_MQ {gv.RPC_MQ}")
         # Setup Model.
         self.model_executor = executor_class(vllm_config)
+        logger.info(self.model_executor)
         if executor_fail_callback is not None:
             self.model_executor.register_failure_callback(
                 executor_fail_callback)
 
         self.available_gpu_memory_for_kv_cache = -1
+
+        # BEFORE SETTING UP CACHE, should load model first
+        self.collective_rpc("load_model",
+                            kwargs={"vllmconfig": vllm_config})
 
         # Setup KV Caches and update CacheConfig after profiling.
         num_gpu_blocks, num_cpu_blocks, kv_cache_config = \
@@ -221,7 +228,7 @@ class EngineCore:
 
     def add_request(self, request: Request, request_wave: int = 0):
         """Add request to the scheduler.
-        
+
         `request_wave`: indicate which wave of requests this is expected to
         belong to in DP case
         """
@@ -427,7 +434,7 @@ class EngineCore:
     def preprocess_add_request(
             self, request: EngineCoreRequest) -> tuple[Request, int]:
         """Preprocess the request.
-        
+
         This function could be directly used in input processing thread to allow
         request initialization running in parallel with Model forward
         """
@@ -470,7 +477,7 @@ class EngineCoreProc(EngineCore):
         self.input_queue = queue.Queue[tuple[EngineCoreRequestType, Any]]()
         self.output_queue = queue.Queue[Union[tuple[int, EngineCoreOutputs],
                                               bytes]]()
-        executor_fail_callback = lambda: self.input_queue.put_nowait(
+        def executor_fail_callback(): return self.input_queue.put_nowait(
             (EngineCoreRequestType.EXECUTOR_FAILED, b''))
 
         self.engine_index = engine_index
@@ -1121,7 +1128,7 @@ class DPEngineCoreProc(EngineCoreProc):
             # CUDA graph is not used
             self.model_executor.collective_rpc("compile_or_warm_up_model")
         if reconfig_request.new_data_parallel_rank == \
-        ReconfigureRankType.SHUTDOWN_CURRENT_RANK:
+                ReconfigureRankType.SHUTDOWN_CURRENT_RANK:
             self.shutdown()
             logger.info("DPEngineCoreProc %s shutdown", self.dp_rank)
         else:
