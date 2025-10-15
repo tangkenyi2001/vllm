@@ -183,10 +183,15 @@ class EngineCore:
             else:
                 # Profiles the peak memory usage of the model to determine how
                 # much memory can be allocated for kv cache.
-                available_gpu_memory = (
-                    self.model_executor.determine_available_memory())
-                self.available_gpu_memory_for_kv_cache = \
-                    available_gpu_memory[0]
+
+                # available_gpu_memory = (
+                #     self.model_executor.determine_available_memory())
+                # self.available_gpu_memory_for_kv_cache = \
+                #     available_gpu_memory[0]
+                self.available_gpu_memory_for_kv_cache = int(16 * 1024**3)
+                available_gpu_memory = [
+                    self.available_gpu_memory_for_kv_cache
+                ] * len(kv_cache_specs)
         else:
             # Attention free models don't need memory for kv cache
             available_gpu_memory = [0] * len(kv_cache_specs)
@@ -221,6 +226,7 @@ class EngineCore:
         elapsed = time.time() - start
         logger.info(("init engine (profile, create kv cache, "
                      "warmup model) took %.2f seconds"), elapsed)
+        logger.info(num_gpu_blocks)
         return num_gpu_blocks, num_cpu_blocks, scheduler_kv_cache_config
 
     def get_supported_tasks(self) -> tuple[SupportedTask, ...]:

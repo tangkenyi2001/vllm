@@ -220,12 +220,6 @@ class Worker(WorkerBase):
         from vllm.platforms import current_platform
         self.current_platform = current_platform
 
-    '''
-    - After executing this method, the worker belongs to the invoker. 
-    - Prevent other invokers from holding this worker again. 
-    - In this function, it should also take vllm_config as the input, and update the current vllm_config
-    '''
-
     def hold(self, vllmconfig: VllmConfig, invokerId: str):
         logger.info(f"{vllmconfig}")
         if self.invoke:
@@ -384,17 +378,17 @@ class Worker(WorkerBase):
                 not self.model_config.enforce_eager
 
             # We skip EPLB here since we don't want to record dummy metrics
-            hidden_states, last_hidden_states = \
-                self.model_runner._dummy_run(
-                    num_tokens=max_num_reqs,
-                    capture_attn_cudagraph=attn_cudagraph,
-                    skip_eplb=True,
-                )
-            if self.model_runner.is_pooling_model:
-                self.model_runner._dummy_pooler_run(hidden_states)
-            else:
-                self.model_runner._dummy_sampler_run(
-                    hidden_states=last_hidden_states)
+            # skip cuda graph
+            # hidden_states, last_hidden_states = \
+            #     self.model_runner._dummy_run(
+            #         num_tokens=max_num_reqs,
+            #         skip_eplb=True,
+            #     )
+            # if self.model_runner.is_pooling_model:
+            #     self.model_runner._dummy_pooler_run(hidden_states)
+            # else:
+            #     self.model_runner._dummy_sampler_run(
+            #         hidden_states=last_hidden_states)
 
         # Reset the seed to ensure that the random state is not affected by
         # the model initialization and profiling.
