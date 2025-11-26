@@ -58,7 +58,7 @@ logging.basicConfig(
 )
 
 
-class EmptyExecutor((Executor)):
+class ProxyExecutor((Executor)):
     def _init_executor(self) -> None:
         # Call self.shutdown at exit to clean up
         # and ensure workers will be terminated.
@@ -75,8 +75,6 @@ class EmptyExecutor((Executor)):
         set_multiprocessing_worker_envs(vllm_config.parallel_config)
 
         self.pipes = {}
-        # Track engines and their assigned workers
-        # engine_uuid -> {"workers": [ranks], "vllm_config": config}
         self.engines = {}
         # Initialize empty workers with minimal setup
         distributed_init_method = get_distributed_init_method(
@@ -303,12 +301,20 @@ class EmptyExecutor((Executor)):
                        kwargs: Optional[dict] = None,
                        non_block: bool = False,
                        unique_reply_rank: Optional[int] = None,
-                       target_ranks: Optional[int] = None) -> list[Any]:
+                       target_ranks: Optional[list[int]] = None) -> list[Any]:
         if self.is_failed:
             raise RuntimeError("Executor failed.")
 
         deadline = None if timeout is None else time.monotonic() + timeout
         kwargs = kwargs or {}
+
+        # Determine which ranks to send the RPC to
+        if target_ranks is None:
+            # Default: broadcast to all workers
+            send_ranks = list(range(self.world_size))
+        else:
+            # Send only to specified workers
+            send_ranks = target_ranks
 
         # NOTE: If the args are heterogeneous, then we pack them into a list,
         # and unpack them in the method of every worker, because every worker
@@ -319,17 +325,21 @@ class EmptyExecutor((Executor)):
             else:
                 send_method = cloudpickle.dumps(
                     method, protocol=pickle.HIGHEST_PROTOCOL)
-            for rank in target_ranks:
+
+            # Enqueue the method call to the specified ranks
+            for rank in send_ranks:
                 self.rpc_broadcast_mq.enqueue(
                     (send_method, args, kwargs, rank))
 
-            # workers = (self.workers[unique_reply_rank],
-            #            ) if unique_reply_rank is not None else self.worker
+            # Determine which workers to collect responses from
             if unique_reply_rank is not None:
+                # Only get response from one specific worker
                 workers = [self.workers[unique_reply_rank]]
             elif target_ranks is not None:
+                # Get responses from the specified target workers
                 workers = [self.workers[rank] for rank in target_ranks]
             else:
+                # Get responses from all workers
                 workers = self.workers
 
             responses = []

@@ -58,11 +58,3 @@ if __name__ == "__main__":
     logger.info("WorkerController started")
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
-    # logging.basicConfig(level=logging.INFO)
-    # logger.info("Starting FastAPI server...")
-
-    # # Initialize WorkerController in background thread
-    # init_thread = threading.Thread(target=init_worker_controller, daemon=True)
-    # init_thread.start()
-
-    # uvicorn.run(app, host="0.0.0.0", port=8000)

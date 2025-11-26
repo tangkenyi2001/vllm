@@ -120,7 +120,7 @@ class ShmRingBuffer:
         created object to other processes by pickling it. The other processes will
         get the name of the shared memory and open it, so that they can access the
         same shared memory buffer.
-        """# noqa
+        """  # noqa
         self.n_reader = n_reader
         self.metadata_size = 1 + n_reader
         self.max_chunk_bytes = max_chunk_bytes
@@ -290,6 +290,35 @@ class MessageQueue:
 
     def export_handle(self) -> Handle:
         return self.handle
+
+    def create_writer_from_handle(handle):
+        """Recreate a writer MessageQueue from an existing handle."""
+        mq = MessageQueue.__new__(MessageQueue)
+
+        mq.handle = handle
+        mq._is_writer = True
+        mq._is_local_reader = False
+        mq._is_remote_reader = False
+        mq.local_reader_rank = -1
+        mq.current_idx = 0
+
+        # Reattach to existing shared memory buffer
+        mq.buffer = ShmRingBuffer(*handle.buffer_handle)
+
+        # Create new XPUB socket bound to the same local_subscribe_addr
+        ctx = zmq.Context()
+        mq.local_socket = ctx.socket(zmq.XPUB)
+        mq.local_socket.setsockopt(zmq.XPUB_VERBOSE, True)
+        mq.local_socket.bind(handle.local_subscribe_addr)
+
+        mq.remote_socket = None
+        mq._read_spin_timer = None  # not needed for writer
+
+        # Preserve reader counts
+        mq.n_local_reader = len(handle.local_reader_ranks)
+        mq.n_remote_reader = getattr(handle, "n_remote_reader", 0)
+
+        return mq
 
     @staticmethod
     def create_from_handle(handle: Handle, rank) -> "MessageQueue":

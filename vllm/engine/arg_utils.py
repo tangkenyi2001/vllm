@@ -464,8 +464,8 @@ class EngineArgs:
             model_id = self.model
             self.model = get_model_path(self.model, self.revision)
             logger.info(
-                "HF_HUB_OFFLINE is True, replace model_id [%s] " \
-                "to model_path [%s]",model_id, self.model)
+                "HF_HUB_OFFLINE is True, replace model_id [%s] "
+                "to model_path [%s]", model_id, self.model)
 
     @staticmethod
     def add_cli_args(parser: FlexibleArgumentParser) -> FlexibleArgumentParser:
@@ -669,8 +669,7 @@ class EngineArgs:
         parallel_group.add_argument(
             "--num-redundant-experts",
             type=int,
-            help=
-            "[DEPRECATED] --num-redundant-experts will be removed in v0.12.0.",
+            help="[DEPRECATED] --num-redundant-experts will be removed in v0.12.0.",
             deprecated=True)
         parallel_group.add_argument(
             "--eplb-window-size",
@@ -680,14 +679,12 @@ class EngineArgs:
         parallel_group.add_argument(
             "--eplb-step-interval",
             type=int,
-            help=
-            "[DEPRECATED] --eplb-step-interval will be removed in v0.12.0.",
+            help="[DEPRECATED] --eplb-step-interval will be removed in v0.12.0.",
             deprecated=True)
         parallel_group.add_argument(
             "--eplb-log-balancedness",
             action=argparse.BooleanOptionalAction,
-            help=
-            "[DEPRECATED] --eplb-log-balancedness will be removed in v0.12.0.",
+            help="[DEPRECATED] --eplb-log-balancedness will be removed in v0.12.0.",
             deprecated=True)
 
         parallel_group.add_argument(
@@ -1368,8 +1365,7 @@ class EngineArgs:
             backend=self.guided_decoding_backend,
             disable_fallback=self.guided_decoding_disable_fallback,
             disable_any_whitespace=self.guided_decoding_disable_any_whitespace,
-            disable_additional_properties=\
-                self.guided_decoding_disable_additional_properties,
+            disable_additional_properties=self.guided_decoding_disable_additional_properties,
             reasoning_backend=self.reasoning_parser
         )
 
@@ -1531,8 +1527,8 @@ class EngineArgs:
                     ParallelConfig.distributed_executor_backend, "ray", "mp",
                     "external_launcher"):
                 name = "Pipeline Parallelism without Ray distributed " \
-                        "executor or multiprocessing executor or external " \
-                        "launcher"
+                    "executor or multiprocessing executor or external " \
+                    "launcher"
                 _raise_or_fallback(feature_name=name,
                                    recommend_to_remove=False)
                 return False
@@ -1770,6 +1766,24 @@ class AsyncEngineArgs(EngineArgs):
     def disable_log_requests(self, value: bool):
         self.enable_log_requests = not value
 
+    def async_engine_args_from_vllm_config(vllm_config: VllmConfig):
+        return AsyncEngineArgs(
+            model=vllm_config.model_config.model,
+            enforce_eager=getattr(vllm_config.model_config,
+                                  "enforce_eager", False),
+            tensor_parallel_size=getattr(
+                vllm_config.parallel_config, "tensor_parallel_size", 1),
+            disable_custom_all_reduce=getattr(
+                vllm_config.parallel_config, "disable_custom_all_reduce", False),
+            distributed_executor_backend=getattr(
+                vllm_config.parallel_config, "distributed_executor_backend", None),
+            num_gpu_blocks_override=getattr(
+                vllm_config.cache_config, "num_gpu_blocks_override", None),
+            scheduler_cls=getattr(vllm_config.scheduler_config,
+                                  "scheduler_cls", None),
+            # Add more fields as needed from other subconfigs
+        )
+
     @staticmethod
     def add_cli_args(parser: FlexibleArgumentParser,
                      async_args_only: bool = False) -> FlexibleArgumentParser:
@@ -1852,9 +1866,9 @@ def human_readable_int(value):
             try:
                 return int(number) * mult
             except ValueError as e:
-                raise argparse.ArgumentTypeError("Decimals are not allowed " \
-                f"with binary suffixes like {suffix}. Did you mean to use " \
-                f"{number}{suffix.lower()} instead?") from e
+                raise argparse.ArgumentTypeError("Decimals are not allowed "
+                                                 f"with binary suffixes like {suffix}. Did you mean to use "
+                                                 f"{number}{suffix.lower()} instead?") from e
 
     # Regular plain number.
     return int(value)

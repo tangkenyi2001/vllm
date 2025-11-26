@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from argparse import Namespace
 import pickle
 import signal
 from contextlib import contextmanager
@@ -12,6 +13,7 @@ import zmq
 from vllm import AsyncEngineArgs, SamplingParams
 from vllm.config import VllmConfig
 from vllm.engine.llm_engine import LLMEngine
+from vllm.distributed.device_communicators.shm_broadcast import MessageQueue
 # yapf conflicts with isort for this block
 # yapf: disable
 from vllm.engine.multiprocessing import (ENGINE_DEAD_ERROR, IPC_DATA_EXT,
@@ -447,11 +449,18 @@ def signal_handler(*_) -> None:
 
 def run_mp_engine(vllm_config: VllmConfig, usage_context: UsageContext,
                   ipc_path: str, disable_log_stats: bool,
-                  enable_log_requests: bool, engine_alive):
+                  enable_log_requests: bool, engine_alive, args: Namespace):
     try:
         # Ensure we can serialize transformer config before spawning
         maybe_register_config_serialize_by_value()
-
+        import vllm.worker_controller.globalvar.global_var as gv
+        # Later, when reading:
+        import os
+        print(f"Reading in PID engine process: {os.getpid()}")
+        mq = MessageQueue.create_writer_from_handle(args.RPC_MQ_HANDLE)
+        gv.RPC_MQ = mq
+        gv.WORKERS = args.WORKERS
+        print(gv.RPC_MQ)
         engine = MQLLMEngine.from_vllm_config(
             vllm_config=vllm_config,
             usage_context=usage_context,

@@ -242,10 +242,52 @@ class Worker(WorkerBase):
         res = f"{os.getpid()} Model unheld"
         return res
 
-    def load_model(self, vllmconfig) -> str:
+    def update_vllm_config(self, vllmconfig: VllmConfig) -> str:
+        """Update the vllm config at runtime without checking invoke status.
+
+        This allows updating worker configuration after initialization,
+        which is useful for dynamic model loading scenarios.
+        """
+        logger.info(f"{os.getpid()} Updating vllm config")
+        logger.info(f"{vllmconfig}")
+        # Set vllmconfig
+        self.vllm_config = vllmconfig
+        # Reload all config components
+        self.reload()
+        logger.info(f"{os.getpid()} vllm config updated")
+        return f"{os.getpid()} Config updated"
+
+    def is_model_loaded(self) -> dict:
+        """Check if model is loaded and return status info."""
+        if not hasattr(self, 'model_runner') or self.model_runner is None:
+            return {
+                "loaded": False,
+                "pid": os.getpid(),
+                "model": None
+            }
+
+        try:
+            model = self.model_runner.get_model()
+            return {
+                "loaded": True,
+                "pid": os.getpid(),
+                "model_class": type(model).__name__,
+                "device": str(self.device),
+                "model_name": self.model_config.model
+            }
+        except Exception as e:
+            return {
+                "loaded": False,
+                "pid": os.getpid(),
+                "error": str(e)
+            }
+
+    def load_model(self, vllmconfig: VllmConfig) -> str:
         logger.info(f"{os.getpid()} LOAD MODEL CALLED")
         logger.info(f"{vllmconfig}")
         # create GPUModelRunner
+        vllmconfig.cache_config.num_gpu_blocks = 29127
+        vllmconfig.cache_config.num_cpu_blocks = 1
         self.model_runner: GPUModelRunner = GPUModelRunner(
             vllmconfig, self.device)
         eep_scale_up = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"

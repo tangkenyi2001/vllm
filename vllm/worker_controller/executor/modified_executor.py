@@ -45,6 +45,9 @@ class ModifiedExecutor(Executor):
 
     def _init_executor(self) -> None:
         import vllm.worker_controller.globalvar.global_var as gv
+        # Later, when reading:
+        import os
+        print(f"Reading in PID: {os.getpid()}")
         self.rpc_broadcast_mq = gv.RPC_MQ
         logger.info(f"MQ in executor, {self.rpc_broadcast_mq}")
         # Call self.shutdown at exit to clean up

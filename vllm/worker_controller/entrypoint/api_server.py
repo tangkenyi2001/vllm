@@ -39,7 +39,7 @@ from typing_extensions import assert_never
 
 import vllm.envs as envs
 from vllm.config import VllmConfig
-from vllm.engine.arg_utils import AsyncEngineArgs
+from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine  # type: ignore
 from vllm.engine.multiprocessing.client import MQLLMEngineClient
 from vllm.engine.multiprocessing.engine import run_mp_engine
@@ -171,8 +171,11 @@ async def build_async_engine_client(
     # Ensures everything is shutdown and cleaned up on error/exit
 
     # We need to somehow find a way to pass in the vllmconfig into this to create the engine arguments
-    engine_args = AsyncEngineArgs.from_cli_args(args)
-
+    # have to build the engine args
+    import vllm.worker_controller.globalvar.global_var as gv
+    # engine_args = AsyncEngineArgs.from_cli_args(args)
+    engine_args = AsyncEngineArgs.async_engine_args_from_vllm_config(
+        gv.VLLM_CONFIG)
     if disable_frontend_multiprocessing is None:
         disable_frontend_multiprocessing = bool(
             args.disable_frontend_multiprocessing)
@@ -204,8 +207,7 @@ async def build_async_engine_client_from_engine_args(
     """
 
     # Create the EngineConfig (determines if we can use V1).
-    # vllm_config = engine_args.create_engine_config(usage_context=usage_context)
-    vllm_config = args.vllmconfig
+    vllm_config = engine_args.create_engine_config(usage_context=usage_context)
     # V1 AsyncLLM.
     if envs.VLLM_USE_V1:
         if disable_frontend_multiprocessing:
@@ -287,12 +289,24 @@ async def build_async_engine_client_from_engine_args(
         # The Process can raise an exception during startup, which may
         # not actually result in an exitcode being reported. As a result
         # we use a shared variable to communicate the information.
+        import vllm.worker_controller.globalvar.global_var as gv
+        # Later, when reading:
+        print(f"Reading in PID before creating engine: {os.getpid()}")
+        args.RPC_MQ_HANDLE = gv.RPC_MQ.handle
+        # Remove the unpicklable MessageQueue object
+        args.WORKERS = gv.WORKERS
+        if hasattr(args, "RPC_MQ"):
+            delattr(args, "RPC_MQ")
+        if hasattr(args, "rpc_broadcast_mq"):
+            del args.rpc_broadcast_mq
+        print(args.WORKERS)
+        # print(vars(args))
         engine_alive = multiprocessing.Value('b', True, lock=False)
         engine_process = context.Process(
             target=run_mp_engine,
             args=(vllm_config, UsageContext.OPENAI_API_SERVER, ipc_path,
                   engine_args.disable_log_stats,
-                  engine_args.enable_log_requests, engine_alive))
+                  engine_args.enable_log_requests, engine_alive, args))
         engine_process.start()
         engine_pid = engine_process.pid
         assert engine_pid is not None, "Engine process failed to start."
@@ -1930,7 +1944,10 @@ async def run_server_worker(listen_address,
                             client_config=None,
                             **uvicorn_kwargs) -> None:
     """Run a single API server worker."""
-
+    import vllm.worker_controller.globalvar.global_var as gv
+    print(f"READING in {os.getpid()}")
+    gv.RPC_MQ = args.RPC_MQ
+    print(gv.RPC_MQ)
     if args.tool_parser_plugin and len(args.tool_parser_plugin) > 3:
         ToolParserManager.import_tool_parser(args.tool_parser_plugin)
 

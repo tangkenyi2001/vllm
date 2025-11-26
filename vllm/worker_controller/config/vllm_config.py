@@ -56,6 +56,23 @@ from vllm.utils import (DEFAULT_MAX_NUM_BATCHED_TOKENS,
 
 # yapf: enable
 
+# Mock model info for DummyModelConfig to avoid HuggingFace lookups
+
+
+@dataclass
+class MockModelInfo:
+    """Mock model info with all flags set to False for dummy configs."""
+    supports_cross_encoding: bool = False
+    supports_pp: bool = False
+    supports_multimodal_raw_input: bool = False
+    is_attention_free: bool = False
+    is_hybrid: bool = False
+    has_noops: bool = False
+    has_inner_state: bool = False
+    supports_v0_only: bool = False
+    supports_multimodal: bool = False
+
+
 if TYPE_CHECKING:
     from _typeshed import DataclassInstance
     from ray.util.placement_group import PlacementGroup
@@ -591,7 +608,7 @@ class DummyModelConfig:
         self.maybe_pull_model_tokenizer_for_s3(self.model, self.tokenizer)
 
         if (backend := envs.VLLM_ATTENTION_BACKEND
-            ) and backend == "FLASHINFER" and find_spec("flashinfer") is None:
+                ) and backend == "FLASHINFER" and find_spec("flashinfer") is None:
             raise ValueError(
                 "VLLM_ATTENTION_BACKEND is set to FLASHINFER, but flashinfer "
                 "module was not found. See "
@@ -730,13 +747,17 @@ class DummyModelConfig:
         # # may fail to load dynamic modules in child processes
         # model_info, arch = registry.inspect_model_cls(architectures, self)
         # self._model_info = model_info
-        self._model_info = None
+
+        # Create a minimal mock model_info for DummyModelConfig
+        self._model_info = MockModelInfo()
         # self._architecture = arch
         self._architecture = None
         # logger.info("Resolved architecture: %s", arch)
 
         # self.pooler_config = self._init_pooler_config()
         self.pooler_config = None
+        # Ensure multimodal_config is initialized for DummyModelConfig
+        self.multimodal_config = None
         # self.dtype = _get_and_verify_dtype(
         #     self.model,
         #     self.hf_config,
@@ -1690,6 +1711,8 @@ class DummyModelConfig:
 
     @property
     def uses_mrope(self) -> bool:
+        if self.hf_config is None:
+            return False  # For DummyModelConfig
         return uses_mrope(self.hf_config)
 
     @property

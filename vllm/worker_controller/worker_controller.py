@@ -49,7 +49,7 @@ from vllm.worker_controller.entrypoint.api_server import run_server
 from vllm.utils import (Device, FlexibleArgumentParser, decorate_logs,
                         get_open_zmq_ipc_path, is_valid_ipv6_address,
                         set_ulimit)
-from vllm.worker_controller.executor.empty_executor import EmptyExecutor
+from vllm.worker_controller.executor.proxy_executor import ProxyExecutor
 import uvloop
 logger = init_logger(__name__)
 logging.basicConfig(
@@ -124,14 +124,17 @@ class WorkerController:
         cacheConfig = CacheConfig(gpu_memory_utilization=0.9)
         parallelConfig = ParallelConfig(
             world_size=2, worker_cls='vllm.worker_controller.gpu_worker.Worker')
-        # parallelConfig = ParallelConfig(
-        #     world_size=2)
         dummyvllmConfig = DummyVllmConfig(
             model_config=modelConfig, cache_config=cacheConfig, parallel_config=parallelConfig)
 
-        self.executor = EmptyExecutor(vllm_config=dummyvllmConfig)
+        # Create resource allocator first
         self.resourceAllocater = ResourceAllocator(
             numberOfGPUs=dummyvllmConfig.parallel_config.world_size)
+
+        # Create executor and inject the resource allocator
+        self.executor = ProxyExecutor(vllm_config=dummyvllmConfig)
+        self.executor.resource = self.resourceAllocater  # Inject resource manager
+
         self.rpc_broadcast_mq = self.executor.rpc_broadcast_mq
 
     # Create API server using our own executor
@@ -153,10 +156,13 @@ class WorkerController:
 
         import vllm.worker_controller.globalvar.global_var as gv
         gv.VLLM_CONFIG = vllm_config
+        import os
+        print(f"Setting in PID: {os.getpid()}")
         print(gv.VLLM_CONFIG)
         gv.RPC_MQ = self.executor.rpc_broadcast_mq
         gv.WORKERS = self.executor.workers
         args.port = port
+        args.RPC_MQ = gv.RPC_MQ
 
         # should pass the executor in to run,
         # the executor also has the pipes available
@@ -166,7 +172,3 @@ class WorkerController:
 
         proc = Process(target=run_api_server, args=(args,), daemon=False)
         proc.start()
-
-    def delete(self, engineUUID: str):
-        releasedrank, port = self.resourceAllocater.release_by_uuid(engineUUID)
-        # kill the process on the port, kills the api layer.
