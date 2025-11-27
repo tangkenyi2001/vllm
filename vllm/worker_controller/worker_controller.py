@@ -121,54 +121,53 @@ class WorkerController:
     def __init__(self) -> None:
         # Modified Executor will create the empty worker processes and return the pipes
         modelConfig = DummyModelConfig("dummy", enforce_eager=True)
-        cacheConfig = CacheConfig(gpu_memory_utilization=0.9)
+        cacheConfig = CacheConfig(gpu_memory_utilization=0.85)
         parallelConfig = ParallelConfig(
             world_size=2, worker_cls='vllm.worker_controller.gpu_worker.Worker')
+        # parallelConfig = ParallelConfig(
+        #     world_size=2)
         dummyvllmConfig = DummyVllmConfig(
             model_config=modelConfig, cache_config=cacheConfig, parallel_config=parallelConfig)
 
-        # Create resource allocator first
+        self.executor = ProxyExecutor(vllm_config=dummyvllmConfig)
         self.resourceAllocater = ResourceAllocator(
             numberOfGPUs=dummyvllmConfig.parallel_config.world_size)
-
-        # Create executor and inject the resource allocator
-        self.executor = ProxyExecutor(vllm_config=dummyvllmConfig)
-        self.executor.resource = self.resourceAllocater  # Inject resource manager
-
+        # Set the resource allocator in the executor
+        self.executor.resource = self.resourceAllocater
         self.rpc_broadcast_mq = self.executor.rpc_broadcast_mq
 
-    # Create API server using our own executor
+    # Create API server using RemoteProxyExecutor
     def create(self, vllm_config: VllmConfig, engineUUID: str):
-        # We will allocate first.
-        # When it is created, we will create an api layer and use our own executor
-        assigned_ranks, port = self.resourceAllocater.assign(
-            num=vllm_config.parallel_config.world_size, uuid=engineUUID)
-        # need to create the api layer using the port allocated and use our own executor and take notes of the ranks of the pipes to use.
+        """
+        Create an API server that uses PipeExecutor to communicate
+        with the existing workers via pipes.
 
-        parser = FlexibleArgumentParser(
-            description="vLLM OpenAI-Compatible RESTful API server.")
-        parser = make_arg_parser(parser)
-        args = parser.parse_args()
+        Args:
+            vllm_config: Configuration for the model/engine
+            engineUUID: Unique identifier for this API server instance
+        """
+        # Delegate to ProxyExecutor which handles the full workflow
+        return self.executor.create(vllm_config, engineUUID)
 
-        args.rpc_broadcast_mq = self.executor.rpc_broadcast_mq
-        args.assigned_ranks = assigned_ranks
-        args.vllmconfig = vllm_config
+    def delete(self, engineUUID: str):
+        """
+        Delete an API server and release its resources.
 
-        import vllm.worker_controller.globalvar.global_var as gv
-        gv.VLLM_CONFIG = vllm_config
-        import os
-        print(f"Setting in PID: {os.getpid()}")
-        print(gv.VLLM_CONFIG)
-        gv.RPC_MQ = self.executor.rpc_broadcast_mq
-        gv.WORKERS = self.executor.workers
-        args.port = port
-        args.RPC_MQ = gv.RPC_MQ
+        Args:
+            engineUUID: Unique identifier of the API server to delete
+        """
+        # Terminate the API server process first
+        if engineUUID in self.executor.engines:
+            engine_info = self.executor.engines[engineUUID]
+            proc = engine_info.get("proc")
+            if proc and proc.is_alive():
+                logger.info(f"Terminating API server process {proc.pid}")
+                proc.terminate()
+                proc.join(timeout=5)
+                if proc.is_alive():
+                    logger.warning(
+                        f"Force killing API server process {proc.pid}")
+                    proc.kill()
 
-        # should pass the executor in to run,
-        # the executor also has the pipes available
-
-        def run_api_server(args):
-            uvloop.run(run_server(args))
-
-        proc = Process(target=run_api_server, args=(args,), daemon=False)
-        proc.start()
+        # Delegate to ProxyExecutor which handles worker unloading
+        self.executor.delete(engineUUID)

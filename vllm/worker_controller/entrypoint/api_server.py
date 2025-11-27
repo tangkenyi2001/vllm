@@ -170,12 +170,16 @@ async def build_async_engine_client(
     # Context manager to handle engine_client lifecycle
     # Ensures everything is shutdown and cleaned up on error/exit
 
-    # We need to somehow find a way to pass in the vllmconfig into this to create the engine arguments
-    # have to build the engine args
-    import vllm.worker_controller.globalvar.global_var as gv
-    # engine_args = AsyncEngineArgs.from_cli_args(args)
-    engine_args = AsyncEngineArgs.async_engine_args_from_vllm_config(
-        gv.VLLM_CONFIG)
+    # Check if using RemoteExecutor (skip engine_args creation, handled differently)
+    if hasattr(args, 'request_queue') and hasattr(args, 'response_queue'):
+        # For RemoteExecutor, create a minimal engine_args (won't be used)
+        engine_args = AsyncEngineArgs(model=args.model)
+    else:
+        # Standard path: build engine args from vllmconfig or CLI
+        import vllm.worker_controller.globalvar.global_var as gv
+        # engine_args = AsyncEngineArgs.from_cli_args(args)
+        engine_args = AsyncEngineArgs.async_engine_args_from_vllm_config(
+            gv.VLLM_CONFIG)
     if disable_frontend_multiprocessing is None:
         disable_frontend_multiprocessing = bool(
             args.disable_frontend_multiprocessing)
@@ -202,9 +206,65 @@ async def build_async_engine_client_from_engine_args(
     Create EngineClient, either:
         - in-process using the AsyncLLMEngine Directly
         - multiprocess using AsyncLLMEngine RPC
+        - PipeExecutor for ProxyExecutor-managed workers (via pipes)
 
     Returns the Client or None if the creation failed.
     """
+
+    # Check if we should use RemoteExecutor (for ProxyExecutor spawned API servers)
+    if hasattr(args, 'request_queue') and hasattr(args, 'response_queue'):
+        logger.info("Using RemoteExecutor to connect to ProxyExecutor via RPC")
+
+        # Import RemoteExecutor
+        from vllm.worker_controller.executor.remote_executor import RemoteExecutor
+
+        # Get configuration and Queue objects from args
+        vllm_config = args.vllmconfig
+        request_queue = args.request_queue
+        response_queue = args.response_queue
+        engine_uuid = args.engine_uuid
+
+        logger.info(
+            f"Creating RemoteExecutor for engine '{engine_uuid}' on port {args.port}"
+        )
+
+        # Create AsyncLLMEngine with RemoteExecutor
+        engine_client: Optional[EngineClient] = None
+        try:
+            # Use AsyncLLMEngine with custom executor_class
+            from vllm.engine.async_llm_engine import AsyncLLMEngine
+
+            # Create a factory function that creates RemoteExecutor with our parameters
+            # LLMEngine expects executor_class to be callable with signature: (vllm_config)
+            def create_remote_executor(vllm_config):
+                return RemoteExecutor(
+                    vllm_config=vllm_config,
+                    request_queue=request_queue,
+                    response_queue=response_queue,
+                    engine_uuid=engine_uuid,
+                    num_gpu_blocks=getattr(args, 'num_gpu_blocks', 0),
+                    num_cpu_blocks=getattr(args, 'num_cpu_blocks', 0),
+                )
+
+            # Create engine with RemoteExecutor factory
+            engine_client = AsyncLLMEngine(
+                vllm_config=vllm_config,
+                executor_class=create_remote_executor,
+                log_requests=engine_args.enable_log_requests,
+                log_stats=(not engine_args.disable_log_stats),
+                usage_context=usage_context,
+            )
+
+            logger.info(f"RemoteExecutor engine created on port {args.port}")
+            yield engine_client
+
+        finally:
+            if engine_client and hasattr(engine_client, "shutdown"):
+                logger.info(
+                    f"Shutting down RemoteExecutor engine on port {args.port}")
+                engine_client.shutdown()
+
+        return  # Exit early, we've handled the RemoteExecutor case
 
     # Create the EngineConfig (determines if we can use V1).
     vllm_config = engine_args.create_engine_config(usage_context=usage_context)
@@ -464,8 +524,11 @@ def engine_client(request: Request) -> EngineClient:
 @router.get("/health", response_class=Response)
 async def health(raw_request: Request) -> Response:
     """Health check."""
-    await engine_client(raw_request).check_health()
-    return Response(status_code=200)
+    responses = await engine_client(raw_request).check_health()
+    # If responses is a coroutine, await it
+    if asyncio.iscoroutine(responses):
+        responses = await responses
+    return JSONResponse(content={"worker_health": responses})
 
 
 @router.get("/load")
@@ -1944,10 +2007,12 @@ async def run_server_worker(listen_address,
                             client_config=None,
                             **uvicorn_kwargs) -> None:
     """Run a single API server worker."""
-    import vllm.worker_controller.globalvar.global_var as gv
-    print(f"READING in {os.getpid()}")
-    gv.RPC_MQ = args.RPC_MQ
-    print(gv.RPC_MQ)
+    # Note: RPC_MQ global var only needed for old pipe-based approach
+    # RemoteExecutor uses MessageQueue handles passed directly
+    # import vllm.worker_controller.globalvar.global_var as gv
+    # print(f"READING in {os.getpid()}")
+    # gv.RPC_MQ = args.RPC_MQ if hasattr(args, 'RPC_MQ') else None
+    # print(gv.RPC_MQ)
     if args.tool_parser_plugin and len(args.tool_parser_plugin) > 3:
         ToolParserManager.import_tool_parser(args.tool_parser_plugin)
 

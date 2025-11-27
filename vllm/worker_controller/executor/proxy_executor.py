@@ -58,6 +58,31 @@ logging.basicConfig(
 )
 
 
+class CloudpickleQueue:
+    """A Queue wrapper that uses cloudpickle for serialization.
+
+    This allows pickling of complex objects like weakrefs and lambdas
+    that standard pickle cannot handle.
+    """
+
+    def __init__(self):
+        self._queue = multiprocessing.Queue()
+
+    def put(self, obj):
+        """Put an object on the queue using cloudpickle."""
+        pickled = cloudpickle.dumps(obj)
+        self._queue.put(pickled)
+
+    def get(self, block=True, timeout=None):
+        """Get an object from the queue and unpickle it."""
+        pickled = self._queue.get(block=block, timeout=timeout)
+        return cloudpickle.loads(pickled)
+
+    def empty(self):
+        """Check if queue is empty."""
+        return self._queue.empty()
+
+
 class ProxyExecutor((Executor)):
     def _init_executor(self) -> None:
         # Call self.shutdown at exit to clean up
@@ -76,6 +101,11 @@ class ProxyExecutor((Executor)):
 
         self.pipes = {}
         self.engines = {}
+        self.resource = None  # Will be set by WorkerController
+
+        # Track API server message queues: engine_uuid -> {request_mq, response_mq}
+        self.api_request_queues = {}
+
         # Initialize empty workers with minimal setup
         distributed_init_method = get_distributed_init_method(
             get_loopback_ip(), get_open_port())
@@ -115,6 +145,7 @@ class ProxyExecutor((Executor)):
             logger.info(f"{self.pipes}")
 
             self.start_worker_monitor()
+            self.start_api_server_request_loop()
             success = True
         finally:
             if not success:
@@ -144,78 +175,135 @@ class ProxyExecutor((Executor)):
         parentrecv: Connection = self.pipes[rank]["parent_recv"]
         return parentrecv.recv()
 
-    def create(self, vllm_config: VllmConfig, engineUUID: str):
-        """Create an engine by assigning and configuring workers."""
+    def create(self, vllm_config: Union[VllmConfig, DummyVllmConfig], engineUUID: str):
+        """Create an API server with MessageQueue-based RPC to this ProxyExecutor."""
         required = vllm_config.parallel_config.world_size
         logger.info(f"World Size {required}")
-        # Assign workers to this engine
-        assigned_ranks, port = self.resource.assign(
-            required, engineUUID)
-        logger.info(assigned_ranks)
-        result = []
-        parentsendpipes = []
-        parentrecvpipes = []
-        for rank in assigned_ranks:
-            parentsend: Connection = self.pipes[rank]["parent_send"]
-            parentsend.send(("hold", (vllm_config, engineUUID), {}, None))
-            parentsendpipes.append(parentsend)
-            parentrecv: Connection = self.pipes[rank]["parent_recv"]
-            result.append([rank, parentrecv.recv()])
-            parentrecvpipes.append(parentrecv)
 
-        logger.info(result)
-        result = []
-        for rank in assigned_ranks:
-            parentsend: Connection = self.pipes[rank]["parent_send"]
-            parentsend.send(("load_model", (vllm_config,), {}, None))
-            parentrecv: Connection = self.pipes[rank]["parent_recv"]
-            result.append([rank, parentrecv.recv()])
-        logger.info(result)
-        # run api server and create the engine and executor and pass the pipes
+        # Disable CUDA graphs for worker controller
+        vllm_config.compilation_config.use_cudagraph = False
+
+        # Assign workers to this engine
+        assigned_ranks, port = self.resource.assign(required, engineUUID)
+        logger.info(f"Assigned ranks {assigned_ranks} to engine {engineUUID}")
+
+        # Send "hold" RPC to workers via collective_rpc
+        results = self.collective_rpc(
+            "hold",
+            args=(vllm_config, engineUUID),
+            target_ranks=assigned_ranks
+        )
+        logger.info(f"Workers held: {results}")
+
+        # Send "load_model" RPC to workers via collective_rpc
+        results = self.collective_rpc(
+            "load_model",
+            args=(vllm_config,),
+            target_ranks=assigned_ranks
+        )
+        logger.info(f"Models loaded: {results}")
+
+        # Calculate available blocks after model is loaded
+        # Query first worker only since they all have the same model
+        results = self.collective_rpc(
+            "determine_num_available_blocks",
+            target_ranks=assigned_ranks,
+            unique_reply_rank=assigned_ranks[0]
+        )
+        num_gpu_blocks, num_cpu_blocks = results[0]
+        logger.info(
+            f"Available blocks: {num_gpu_blocks} GPU, {num_cpu_blocks} CPU")
+
+        # Initialize KV Cache on workers
+        self.collective_rpc(
+            "initialize_cache",
+            args=(num_gpu_blocks, num_cpu_blocks),
+            target_ranks=assigned_ranks
+        )
+        logger.info("KV Cache initialized on workers")
+
+        # Create CloudpickleQueue pair for API server communication
+        # Use cloudpickle to handle complex objects like scheduler_output with weakrefs
+        request_queue = CloudpickleQueue()  # API server -> ProxyExecutor
+        response_queue = CloudpickleQueue()  # ProxyExecutor -> API server
+
+        # Store queues for this engine
+        self.api_request_queues[engineUUID] = {
+            "request_queue": request_queue,
+            "response_queue": response_queue,
+            "num_gpu_blocks": num_gpu_blocks,  # Pre-calculated
+            "num_cpu_blocks": num_cpu_blocks,  # Pre-calculated
+        }
+
+        # Prepare args for API server
         parser = FlexibleArgumentParser(
             description="vLLM OpenAI-Compatible RESTful API server.")
         parser = make_arg_parser(parser)
         args = parser.parse_args()
 
-        args.parentsendpipes = parentsendpipes
-        args.parentsrecvpipes = parentrecvpipes
+        args.request_queue = request_queue
+        args.response_queue = response_queue
+        args.engine_uuid = engineUUID
         args.vllmconfig = vllm_config
         args.model = vllm_config.model_config.model
         args.port = port
+        args.num_gpu_blocks = num_gpu_blocks
+        args.num_cpu_blocks = num_cpu_blocks
 
         def run_api_server(args):
             uvloop.run(run_server(args))
 
         proc = Process(target=run_api_server, args=(args,), daemon=False)
         proc.start()
+
         # Store engine info
         self.engines[engineUUID] = {
             "workers": assigned_ranks,
             "vllm_config": vllm_config,
+            "proc": proc,
         }
 
         logger.info(
-            f"Engine {engineUUID} created with workers {assigned_ranks}")
+            f"Engine {engineUUID} created with workers {assigned_ranks} on port {port}")
+
+        return proc
 
     '''
     Delete the worker modelrunner and unhold the model
     '''
 
     def delete(self, engineUUID: str):
-        # Assign workers to this engine
-        assigned_ranks = self.resource.release_by_uuid(engineUUID)
-        # make rpc calls to each assigned worker to unload model
-        (output, ) = self.collective_rpc(
+        """Delete an API server and clean up its resources."""
+        # Get assigned ranks before releasing
+        assigned_ranks = self.resource.get_ranks_by_uuid(engineUUID)
+
+        # Release workers from resource allocator
+        released_ranks, port = self.resource.release_by_uuid(engineUUID)
+        logger.info(f"Released ranks {released_ranks} and port {port}")
+
+        # Unload models from workers
+        results = self.collective_rpc(
             "unload_model",
             args=(),
-            target_ranks=assigned_ranks)
-        logger.info(output)
-        # make rpc calls to each assigned worker to unhold worker
-        (output, ) = self.collective_rpc(
+            target_ranks=assigned_ranks
+        )
+        logger.info(f"Unload model results: {results}")
+
+        # Unhold workers
+        results = self.collective_rpc(
             "unhold",
             args=(),
-            target_ranks=assigned_ranks)
-        logger.info(output)
+            target_ranks=assigned_ranks
+        )
+        logger.info(f"Unhold results: {results}")
+
+        # Clean up API server message queues
+        if engineUUID in self.api_request_queues:
+            del self.api_request_queues[engineUUID]
+
+        # Remove engine info
+        if engineUUID in self.engines:
+            del self.engines[engineUUID]
 
     def start_worker_monitor(self):
         workers = self.workers
@@ -246,6 +334,93 @@ class ProxyExecutor((Executor)):
                daemon=True,
                name="MultiprocWorkerMonitor").start()
 
+    def start_api_server_request_loop(self):
+        """Start a thread that listens for RPC requests from API servers."""
+
+        def api_server_request_loop():
+            logger.info("API server request loop started")
+            while not self.shutdown_event.is_set():
+                # Check each API server's request queue
+                for engine_uuid, queues in list(self.api_request_queues.items()):
+                    request_queue = queues["request_queue"]
+                    response_queue = queues["response_queue"]
+
+                    try:
+                        # Non-blocking check for requests (timeout=0.1s)
+                        method, args, kwargs = request_queue.get(timeout=0.1)
+
+                        # Handle the RPC request
+                        try:
+                            result = self._handle_api_server_request(
+                                engine_uuid, method, args, kwargs
+                            )
+                            response_queue.put(("success", result))
+                        except Exception as e:
+                            logger.exception(
+                                f"Error handling API server request: {e}")
+                            response_queue.put(("error", str(e)))
+                    except Exception:
+                        # Timeout or queue closed, continue
+                        continue
+
+        Thread(target=api_server_request_loop,
+               daemon=True,
+               name="APIServerRequestLoop").start()
+
+    def _handle_api_server_request(self, engine_uuid: str, method: str, args: tuple, kwargs: dict):
+        """Handle an RPC request from an API server."""
+        logger.debug(
+            f"Handling API server request: {method} for engine {engine_uuid}")
+
+        # Get the target ranks for this engine
+        target_ranks = self.resource.get_ranks_by_uuid(engine_uuid)
+
+        if not target_ranks:
+            raise RuntimeError(f"No workers assigned to engine {engine_uuid}")
+
+        # Map API server method calls to ProxyExecutor methods
+        if method == "execute_model":
+            # Forward to execute_model with engine_uuid
+            return self.execute_model(engine_uuid, *args, **kwargs)
+
+        elif method == "determine_num_available_blocks":
+            # Call collective_rpc to query first worker
+            results = self.collective_rpc(
+                "determine_num_available_blocks",
+                args=args,
+                kwargs=kwargs,
+                unique_reply_rank=target_ranks[0]
+            )
+            return results[0]
+
+        elif method == "initialize_cache":
+            # Call all workers to initialize cache
+            results = self.collective_rpc(
+                "initialize_cache",
+                args=args,
+                kwargs=kwargs,
+                target_ranks=target_ranks
+            )
+            return results
+
+        elif method == "check_health":
+            # Ping all workers for this engine
+            results = self.collective_rpc(
+                "ping",
+                target_ranks=target_ranks
+            )
+            return results
+
+        else:
+            # Generic RPC forwarding
+            results = self.collective_rpc(
+                method,
+                args=args,
+                kwargs=kwargs,
+                target_ranks=target_ranks
+            )
+            return results
+
     def register_failure_callback(self, callback: FailureCallback):
         if self.is_failed:
             callback()
@@ -263,12 +438,21 @@ class ProxyExecutor((Executor)):
 
         target_ranks = self.resource.get_ranks_by_uuid(engine_uuid)
 
+        # --- FIX: Transform scheduler_output to ExecuteModelRequest ---
+        from vllm.sequence import ExecuteModelRequest
+        if not isinstance(scheduler_output, ExecuteModelRequest):
+            # You may need to adjust this transformation depending on scheduler_output's structure
+            scheduler_output = ExecuteModelRequest(**scheduler_output)
+        # ------------------------------------------------------------
+
         if not self.has_connector:
             # get output only from a single worker (output_rank)
+            # Use the first rank in target_ranks as the reply rank
+            output_rank = target_ranks[0] if target_ranks else self.output_rank
             (output, ) = self.collective_rpc(
                 "execute_model",
                 args=(scheduler_output, ),
-                unique_reply_rank=self.output_rank,
+                unique_reply_rank=output_rank,
                 non_block=non_block,
                 timeout=envs.VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS,
                 target_ranks=target_ranks)
@@ -421,10 +605,9 @@ class ProxyExecutor((Executor)):
 
         self.rpc_broadcast_mq = None
 
-    def check_health(self) -> None:
-        """Check health of all workers."""
-        self.collective_rpc("check_health", timeout=10)
-        return
+    def check_health(self) -> list[str]:
+        """Check health of all workers and return their responses."""
+        return self.collective_rpc("check_health", timeout=10)
 
     @property
     def max_concurrent_batches(self) -> int:

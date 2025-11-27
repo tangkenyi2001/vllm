@@ -19,7 +19,7 @@ import torch.nn as nn
 from tqdm.auto import tqdm
 
 import vllm.envs as envs
-from vllm.attention import AttentionMetadata, get_attn_backend
+from vllm.attention import Attention, AttentionMetadata, get_attn_backend
 from vllm.attention.backends.abstract import AttentionState
 from vllm.attention.backends.utils import CommonAttentionState
 from vllm.compilation.counter import compilation_counter
@@ -1113,6 +1113,10 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
                     self.model_memory_usage / GiB_bytes,
                     time_after_load - time_before_load)
 
+        self._attention_layers = []
+        for module in self.model.modules():
+            if isinstance(module, Attention):
+                self._attention_layers.append(module)
 
         if self.vllm_config.compilation_config.level ==\
             CompilationLevel.DYNAMO_AS_IS and supports_dynamo():
@@ -1696,6 +1700,12 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
             model_forward_start.record()
 
         if not bypass_model_exec:
+            # Bind KV caches to attention layers
+            if kv_caches is not None and hasattr(self, '_attention_layers'):
+                for i, layer in enumerate(self._attention_layers):
+                    if i < len(kv_caches):
+                        layer.kv_cache[virtual_engine] = kv_caches[i]
+
             with set_forward_context(model_input.attn_metadata,
                                      self.vllm_config, virtual_engine):
                 hidden_or_intermediate_states = model_executable(
