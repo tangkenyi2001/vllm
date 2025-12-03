@@ -30,7 +30,7 @@ from vllm.v1.engine import (EngineCoreOutputs, EngineCoreRequest,
                             ReconfigureDistributedRequest, ReconfigureRankType,
                             UtilityOutput)
 from vllm.v1.engine.coordinator import DPCoordinator
-from vllm.v1.engine.core import EngineCore, EngineCoreProc
+from vllm.worker_controller.engine.core import EngineCore, EngineCoreProc
 from vllm.v1.engine.exceptions import EngineDeadError
 from vllm.v1.engine.utils import (CoreEngineActorManager,
                                   CoreEngineProcManager, launch_core_engines)

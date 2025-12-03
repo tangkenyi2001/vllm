@@ -205,7 +205,7 @@ class CoreEngineActorManager:
         from ray.util.scheduling_strategies import (
             PlacementGroupSchedulingStrategy)
 
-        from vllm.v1.engine.core import DPEngineCoreActor
+        from vllm.worker_controller.engine.core import DPEngineCoreActor
 
         self.local_engine_actors: list[ray.ActorHandle] = []
         self.remote_engine_actors: list[ray.ActorHandle] = []
@@ -454,7 +454,7 @@ class CoreEngineActorManager:
         from ray.util.scheduling_strategies import (
             PlacementGroupSchedulingStrategy)
 
-        from vllm.v1.engine.core import DPEngineCoreActor
+        from vllm.worker_controller.engine.core import DPEngineCoreActor
 
         cur_data_parallel_size = len(self.local_engine_actors) + \
             len(self.remote_engine_actors)
@@ -685,7 +685,7 @@ def launch_core_engines(
     with zmq_socket_ctx(local_handshake_address, zmq.ROUTER,
                         bind=True) as handshake_socket:
 
-        from vllm.v1.engine.core import EngineCoreProc
+        from vllm.worker_controller.engine.core import EngineCoreProc
 
         # Start local engines.
         if local_engine_count:
