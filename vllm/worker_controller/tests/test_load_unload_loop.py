@@ -134,6 +134,7 @@ def run_inference(url, model):
         "prompt": "The capital of France is",
         "max_tokens": 5
     }
+    print(f"   Sending prompt: '{payload['prompt']}'")
     try:
         resp = requests.post(f"{url}/v1/completions", json=payload, timeout=30)
         if resp.status_code != 200:
