@@ -8,6 +8,56 @@ In standard vLLM, creating an engine spawns new worker processes. This involves 
 
 The **Worker Controller** architecture pre-initializes a pool of "dummy" workers that hold GPU resources but are not bound to a specific model. When a request to serve a model arrives, these pre-warmed workers are dynamically assigned to the new engine, configured, and loaded with the model weights.
 
+## Architecture Diagram
+
+```mermaid
+graph TD
+    %% Nodes
+    Client([External Client])
+    
+    subgraph "Worker Controller Process (Port 8000)"
+        Controller[WorkerController API]
+        ProxyExec[ProxyExecutor]
+        ResAlloc[Resource Allocator]
+    end
+    
+    subgraph "Worker Pool (GPU Processes)"
+        Worker1[GPU Worker 1]
+        Worker2[GPU Worker 2]
+        WorkerN[GPU Worker N]
+    end
+    
+    subgraph "Engine Process (Port 8001+)"
+        APIServer[API Server]
+        Engine[vLLM Engine]
+        RemoteExec[RemoteExecutor]
+    end
+
+    %% Relationships
+    Client -- "1. Create Engine (POST /engines)" --> Controller
+    
+    Controller -- "Uses" --> ResAlloc
+    Controller -- "Init" --> ProxyExec
+    
+    Controller -- "2. Spawn New Process" --> APIServer
+    
+    APIServer -- "Hosting" --> Engine
+    Engine -- "Uses" --> RemoteExec
+    
+    Client -- "3. Inference Req (POST /v1/...)" --> APIServer
+    
+    RemoteExec <-- "IPC (Msg Queue)" --> ProxyExec
+    
+    ProxyExec <-- "RPC" --> Worker1
+    ProxyExec <-- "RPC" --> Worker2
+    ProxyExec <-- "RPC" --> WorkerN
+    
+    %% Styling
+    style Client fill:#f9f,stroke:#333,stroke-width:2px
+    style Controller fill:#bbf,stroke:#333,stroke-width:2px
+    style ProxyExec fill:#dfd,stroke:#333,stroke-width:2px
+```
+
 ## Key Components
 
 ### 1. Worker Controller (`worker_controller.py`)
