@@ -319,7 +319,9 @@ class Worker(LocalOrDistributedWorkerBase):
     def unload_model(self) -> str:
         logger.info(f"{os.getpid()} unload model called")
         # Release model runner
-        self.model_runner: ModelRunner = None
+        self.model_runner = None
+        gc.collect()
+        torch.cuda.empty_cache()
 
         res = f"{os.getpid()} model unloaded"
         return res

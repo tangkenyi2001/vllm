@@ -48,6 +48,7 @@ class RemoteExecutor(ExecutorBase):
             num_gpu_blocks: Pre-calculated number of GPU blocks (from ProxyExecutor)
             num_cpu_blocks: Pre-calculated number of CPU blocks (from ProxyExecutor)
         """
+        super().__init__(vllm_config)
         self.vllm_config = vllm_config
         self.parallel_config = vllm_config.parallel_config
         self.engine_uuid = engine_uuid
@@ -70,6 +71,12 @@ class RemoteExecutor(ExecutorBase):
     def _init_executor(self) -> None:
         """Initialize the executor (already done in __init__)."""
         pass
+
+    def __getattr__(self, name):
+        """Forward unknown method calls to ProxyExecutor via RPC."""
+        def wrapper(*args, **kwargs):
+            return self._send_rpc(name, *args, **kwargs)
+        return wrapper
 
     def _send_rpc(self, method: str, *args, **kwargs):
         """Send RPC request to ProxyExecutor and wait for response.

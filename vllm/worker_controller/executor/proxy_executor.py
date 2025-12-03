@@ -910,24 +910,25 @@ class WorkerProc:
         logger = init_logger(f"Worker {os.getpid()}")
         while True:
             method, args, kwargs, output_rank = self.rpc_broadcast_mq.dequeue()
-            try:
-                if isinstance(method, str):
-                    func = getattr(self.worker, method)
-                elif isinstance(method, bytes):
-                    func = partial(cloudpickle.loads(method), self.worker)
-                output = func(*args, **kwargs)
-            except Exception as e:
-                # Notes have been introduced in python 3.11
-                if hasattr(e, "add_note"):
-                    e.add_note(traceback.format_exc())
-                logger.exception("WorkerProc hit an exception.")
-                # exception might not be serializable, so we convert it to
-                # string, only for logging purpose.
-                if output_rank is None or self.rank == output_rank:
+            
+            # Only execute and respond if this worker is the target (or broadcast)
+            if output_rank is None or self.rank == output_rank:
+                try:
+                    if isinstance(method, str):
+                        func = getattr(self.worker, method)
+                    elif isinstance(method, bytes):
+                        func = partial(cloudpickle.loads(method), self.worker)
+                    output = func(*args, **kwargs)
+                    
+                    self.worker_response_mq.enqueue(
+                        (WorkerProc.ResponseStatus.SUCCESS, output))
+                        
+                except Exception as e:
+                    # Notes have been introduced in python 3.11
+                    if hasattr(e, "add_note"):
+                        e.add_note(traceback.format_exc())
+                    logger.exception("WorkerProc hit an exception.")
+                    # exception might not be serializable, so we convert it to
+                    # string, only for logging purpose.
                     self.worker_response_mq.enqueue(
                         (WorkerProc.ResponseStatus.FAILURE, str(e)))
-                continue
-
-            if output_rank is None or self.rank == output_rank:
-                self.worker_response_mq.enqueue(
-                    (WorkerProc.ResponseStatus.SUCCESS, output))
