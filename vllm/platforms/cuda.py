@@ -167,7 +167,7 @@ class CudaPlatformBase(Platform):
 
             from vllm.attention.ops.flashmla import is_flashmla_supported
             if use_flashmla and is_flashmla_supported()[0] \
-                    and cache_config.block_size != 64:
+                and cache_config.block_size != 64:
                 cache_config.block_size = 64
                 logger.info(
                     "Forcing kv cache block size to 64 for FlashMLA backend.")
@@ -367,6 +367,8 @@ class CudaPlatformBase(Platform):
             raise ValueError(
                 f"Invalid attention backend for {cls.device_name}, "
                 f"with use_v1: {use_v1} use_mla: {use_mla}")
+
+        target_backend = _Backend.FLASH_ATTN
         if not cls.has_device_capability(80):
             # Volta and Turing NVIDIA GPUs.
             logger.info(

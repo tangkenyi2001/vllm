@@ -100,7 +100,7 @@ class FlexAttentionBackend(AttentionBackend):
         return False
 
 
-# @torch.compile(fullgraph=True, mode="reduce-overhead")
+#@torch.compile(fullgraph=True, mode="reduce-overhead")
 def physical_to_logical_mapping(block_table: torch.Tensor,
                                 seq_lens: torch.Tensor, block_size: int,
                                 total_blocks: int) -> torch.Tensor:

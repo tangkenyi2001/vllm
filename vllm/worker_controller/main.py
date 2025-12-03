@@ -234,9 +234,9 @@ def create_engine(request: EngineCreateRequest):
         proc = worker_controller.create(vllm_config, request.engine_uuid)
 
         # Get assigned resources
-        assigned_ranks = worker_controller.resourceAllocater.get_ranks_by_uuid(
+        assigned_ranks = worker_controller.resource_allocator.get_ranks_by_uuid(
             request.engine_uuid)
-        port = worker_controller.resourceAllocater.get_port_by_uuid(
+        port = worker_controller.resource_allocator.get_port_by_uuid(
             request.engine_uuid)
 
         logger.info(
@@ -282,9 +282,9 @@ def delete_engine(engine_uuid: str):
                 status_code=404, detail=f"Engine {engine_uuid} not found")
 
         # Get info before deletion
-        assigned_ranks = worker_controller.resourceAllocater.get_ranks_by_uuid(
+        assigned_ranks = worker_controller.resource_allocator.get_ranks_by_uuid(
             engine_uuid)
-        port = worker_controller.resourceAllocater.get_port_by_uuid(
+        port = worker_controller.resource_allocator.get_port_by_uuid(
             engine_uuid)
 
         # Delete the engine
@@ -320,9 +320,9 @@ def get_engine_status(engine_uuid: str):
             status_code=404, detail=f"Engine {engine_uuid} not found")
 
     engine_info = worker_controller.executor.engines[engine_uuid]
-    assigned_ranks = worker_controller.resourceAllocater.get_ranks_by_uuid(
+    assigned_ranks = worker_controller.resource_allocator.get_ranks_by_uuid(
         engine_uuid)
-    port = worker_controller.resourceAllocater.get_port_by_uuid(engine_uuid)
+    port = worker_controller.resource_allocator.get_port_by_uuid(engine_uuid)
 
     proc = engine_info.get("proc")
 
@@ -374,7 +374,7 @@ def list_workers():
             status_code=503, detail="WorkerController not initialized")
 
     workers = []
-    for rank, uuid in worker_controller.resourceAllocater.resources.items():
+    for rank, uuid in worker_controller.resource_allocator.resources.items():
         workers.append({
             "rank": rank,
             "status": "assigned" if uuid != 0 else "free",

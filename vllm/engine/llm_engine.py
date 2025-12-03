@@ -682,7 +682,7 @@ class LLMEngine:
                              "Priority scheduling is not enabled.")
 
         if isinstance(params, SamplingParams) \
-                and params.logits_processors:
+            and params.logits_processors:
             raise ValueError(
                 "Logits processors are not supported in multi-step decoding")
 
@@ -1065,7 +1065,7 @@ class LLMEngine:
         required if the worker is to perform async forward pass to next step.
         """
         for seq_group_metadata, sequence_group_outputs, scheduled_seq_group in \
-                zip(seq_group_metadata_list, output, scheduled_seq_groups):
+            zip(seq_group_metadata_list, output, scheduled_seq_groups):
             seq_group = scheduled_seq_group.seq_group
 
             if seq_group.is_finished():
@@ -1645,7 +1645,8 @@ class LLMEngine:
             #   Metadata
             num_prompt_tokens_requests=num_prompt_tokens_requests,
             num_generation_tokens_requests=num_generation_tokens_requests,
-            max_num_generation_tokens_requests=max_num_generation_tokens_requests,
+            max_num_generation_tokens_requests=
+            max_num_generation_tokens_requests,
             n_requests=n_requests,
             max_tokens_requests=max_tokens_requests,
             finished_reason_requests=finished_reason_requests,

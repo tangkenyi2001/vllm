@@ -1,70 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-import uuid
-import multiprocessing
-import os
-import pickle
-import signal
-import sys
-import threading
-import time
-import traceback
-import weakref
-from datetime import datetime
-from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
-from enum import Enum, auto
-from functools import partial
-from multiprocessing.connection import Connection
-from multiprocessing.process import BaseProcess
-from threading import Thread
-from typing import Any, Callable, Optional, Union, cast
-
-import cloudpickle
 import logging
-import vllm.envs as envs
-from vllm.config import VllmConfig
-from vllm.distributed import (destroy_distributed_environment,
-                              destroy_model_parallel)
-from vllm.distributed.device_communicators.shm_broadcast import (Handle,
-                                                                 MessageQueue)
-from vllm.distributed.kv_transfer.kv_connector.utils import KVOutputAggregator
-from vllm.executor.multiproc_worker_utils import (
-    set_multiprocessing_worker_envs)
-from vllm.logger import init_logger
-from vllm.utils import (decorate_logs, get_distributed_init_method,
-                        get_loopback_ip, get_mp_context, get_open_port,
-                        set_process_title)
-from vllm.v1.executor.abstract import FailureCallback
-from vllm.v1.outputs import ModelRunnerOutput
-from vllm.worker.worker_base import WorkerWrapperBase
-from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
-from vllm.worker_controller.config.vllm_config import DummyModelConfig, DummyVllmConfig, CacheConfig, ParallelConfig
-from vllm.engine.llm_engine import LLMEngine
 
-from multiprocessing import Pipe, Process
-from typing import List
-from vllm.entrypoints.openai.cli_args import make_arg_parser
-from vllm.worker_controller.entrypoint.api_server import run_server
-from vllm.utils import (Device, FlexibleArgumentParser, decorate_logs,
-                        get_open_zmq_ipc_path, is_valid_ipv6_address,
-                        set_ulimit)
+from vllm.config import VllmConfig
+from vllm.logger import init_logger
+from vllm.worker_controller.config.vllm_config import (
+    CacheConfig, DummyModelConfig, DummyVllmConfig, ParallelConfig)
 from vllm.worker_controller.executor.proxy_executor import ProxyExecutor
-import uvloop
+
 logger = init_logger(__name__)
-logging.basicConfig(
-    level=logging.INFO,   # Show INFO and above
-    format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
 
 
 class ResourceAllocator:
-    def __init__(self, numberOfGPUs: int, start_port: int = 8001):
+
+    def __init__(self, number_of_gpus: int, start_port: int = 8001):
         # rank -> uid or 0 (free)
-        self.resources = {i: 0 for i in range(numberOfGPUs)}
+        self.resources = {i: 0 for i in range(number_of_gpus)}
         self.uuid_to_port = {}  # uid -> port
-        self.rank_to_uid = {}   # rank -> uid
+        self.rank_to_uid = {}  # rank -> uid
         self.start_port = start_port
         self.next_port = start_port
 
@@ -90,8 +43,7 @@ class ResourceAllocator:
                 self.resources[rank] = 0
                 del self.rank_to_uid[rank]
             raise RuntimeError(
-                f"Only {len(assigned_ranks)} free resources, requested {num}"
-            )
+                f"Only {len(assigned_ranks)} free resources, requested {num}")
 
         return assigned_ranks, port
 
@@ -120,45 +72,46 @@ class WorkerController:
 
     def __init__(self) -> None:
         # Modified Executor will create the empty worker processes and return the pipes
-        modelConfig = DummyModelConfig("dummy", enforce_eager=True)
-        cacheConfig = CacheConfig(gpu_memory_utilization=0.85)
-        parallelConfig = ParallelConfig(
-            world_size=2, worker_cls='vllm.worker_controller.gpu_worker.Worker')
-        # parallelConfig = ParallelConfig(
-        #     world_size=2)
-        dummyvllmConfig = DummyVllmConfig(
-            model_config=modelConfig, cache_config=cacheConfig, parallel_config=parallelConfig)
+        model_config = DummyModelConfig("dummy", enforce_eager=True)
+        cache_config = CacheConfig(gpu_memory_utilization=0.85)
+        parallel_config = ParallelConfig(
+            world_size=2,
+            worker_cls='vllm.worker_controller.gpu_worker.Worker')
 
-        self.executor = ProxyExecutor(vllm_config=dummyvllmConfig)
-        self.resourceAllocater = ResourceAllocator(
-            numberOfGPUs=dummyvllmConfig.parallel_config.world_size)
+        dummy_vllm_config = DummyVllmConfig(model_config=model_config,
+                                            cache_config=cache_config,
+                                            parallel_config=parallel_config)
+
+        self.executor = ProxyExecutor(vllm_config=dummy_vllm_config)
+        self.resource_allocator = ResourceAllocator(
+            number_of_gpus=dummy_vllm_config.parallel_config.world_size)
         # Set the resource allocator in the executor
-        self.executor.resource = self.resourceAllocater
+        self.executor.resource = self.resource_allocator
         self.rpc_broadcast_mq = self.executor.rpc_broadcast_mq
 
     # Create API server using RemoteProxyExecutor
-    def create(self, vllm_config: VllmConfig, engineUUID: str):
+    def create(self, vllm_config: VllmConfig, engine_uuid: str):
         """
         Create an API server that uses PipeExecutor to communicate
         with the existing workers via pipes.
 
         Args:
             vllm_config: Configuration for the model/engine
-            engineUUID: Unique identifier for this API server instance
+            engine_uuid: Unique identifier for this API server instance
         """
         # Delegate to ProxyExecutor which handles the full workflow
-        return self.executor.create(vllm_config, engineUUID)
+        return self.executor.create(vllm_config, engine_uuid)
 
-    def delete(self, engineUUID: str):
+    def delete(self, engine_uuid: str):
         """
         Delete an API server and release its resources.
 
         Args:
-            engineUUID: Unique identifier of the API server to delete
+            engine_uuid: Unique identifier of the API server to delete
         """
         # Terminate the API server process first
-        if engineUUID in self.executor.engines:
-            engine_info = self.executor.engines[engineUUID]
+        if engine_uuid in self.executor.engines:
+            engine_info = self.executor.engines[engine_uuid]
             proc = engine_info.get("proc")
             if proc and proc.is_alive():
                 logger.info(f"Terminating API server process {proc.pid}")
@@ -170,4 +123,4 @@ class WorkerController:
                     proc.kill()
 
         # Delegate to ProxyExecutor which handles worker unloading
-        self.executor.delete(engineUUID)
+        self.executor.delete(engine_uuid)
