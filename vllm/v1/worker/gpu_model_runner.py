@@ -346,8 +346,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         token_type_id_requests = dict[int, Any]()
         for i, param in enumerate(pooling_params):
             if param.extra_kwargs is not None and \
-                    (token_types := param.extra_kwargs.get(
-                    "compressed_token_type_ids")) is not None:
+            (token_types := param.extra_kwargs.get(
+                "compressed_token_type_ids")) is not None:
                 token_type_id_requests[i] = token_types
 
         if len(token_type_id_requests) == 0:
@@ -449,7 +449,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             pooling_params = new_req_data.pooling_params
 
             if sampling_params and \
-                    sampling_params.sampling_type == SamplingType.RANDOM_SEED:
+                sampling_params.sampling_type == SamplingType.RANDOM_SEED:
                 generator = torch.Generator(device=self.device)
                 generator.manual_seed(sampling_params.seed)
             else:
@@ -862,7 +862,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             )
 
             if self.speculative_config and \
-                    spec_decode_common_attn_metadata is None:
+                spec_decode_common_attn_metadata is None:
                 spec_decode_common_attn_metadata = common_attn_metadata
 
             for attn_group in self.attn_groups[kv_cache_group_id]:
@@ -1220,7 +1220,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
                 mm_hash = mm_hashes[i]
                 encoder_output = self.encoder_cache.get(mm_hash, None)
-                assert encoder_output is not None, \
+                assert encoder_output is not None,\
                     f"Encoder cache miss for {mm_hash}."
 
                 if (is_embed := pos_info.is_embed) is not None:
@@ -1437,8 +1437,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
     ) -> ModelRunnerOutput:
         assert self.input_batch.num_reqs ==\
             len(self.input_batch.pooling_params), \
-            "Either all or none of the requests in" \
-            " a batch must be pooling request"
+        "Either all or none of the requests in" \
+        " a batch must be pooling request"
 
         hidden_states = hidden_states[:num_scheduled_tokens]
         pooling_metadata = self.input_batch.pooling_metadata
@@ -1500,7 +1500,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             # enabled collective fusion for SP
             tp_size = self.vllm_config.parallel_config.tensor_parallel_size
             if self.compilation_config.pass_config. \
-                    enable_sequence_parallelism and tp_size > 1:
+                enable_sequence_parallelism and tp_size > 1:
                 num_input_tokens = round_up(num_scheduled_tokens, tp_size)
             else:
                 num_input_tokens = num_scheduled_tokens
@@ -1850,7 +1850,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                                                        dtype=torch.int32)
                 common_attn_metadata, token_indices =\
                     self.drafter.prepare_inputs(
-                        common_attn_metadata, num_rejected_tokens_cpu)
+                    common_attn_metadata, num_rejected_tokens_cpu)
 
                 target_token_ids = self.input_ids.gpu[token_indices]
                 # TODO(woosuk): Support M-RoPE.
@@ -1999,7 +1999,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             )
 
         if (
-            self.vllm_config.compilation_config.level ==
+            self.vllm_config.compilation_config.level == \
                 CompilationLevel.DYNAMO_AS_IS and supports_dynamo()
         ):
             backend = self.vllm_config.compilation_config.init_backend(
@@ -2253,7 +2253,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # routine of FA2 for pure decode, i.e., Flashdecode + an optimization
         # for GQA/MQA.
         max_query_len = self.uniform_decode_query_len if uniform_decode else \
-            num_tokens
+                                                                num_tokens
 
         # Set num_scheduled_tokens based on num_tokens and max_num_seqs
         # for dummy run with LoRA so that the num_reqs collectively
@@ -2410,7 +2410,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         logits = self.model.compute_logits(hidden_states, None)
         num_reqs = logits.size(0)
 
-        def dummy_tensors(v): return torch.full(
+        dummy_tensors = lambda v: torch.full(
             (num_reqs, ), v, device=self.device)
 
         dummy_metadata = SamplingMetadata(
@@ -2577,7 +2577,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     # Run multimodal encoder.
                     dummy_encoder_outputs = \
                         self.model.get_multimodal_embeddings(
-                            **batched_dummy_mm_inputs)
+                        **batched_dummy_mm_inputs)
 
                     sanity_check_mm_encoder_outputs(
                         dummy_encoder_outputs,
@@ -2650,9 +2650,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             # Capture full cudagraph for uniform decode batches if we have
             # dont already have full mixed prefill-decode cudagraphs
             if cudagraph_mode.decode_mode() == CUDAGraphMode.FULL and \
-                    cudagraph_mode.separate_routine():
+                cudagraph_mode.separate_routine():
                 max_num_tokens = self.scheduler_config.max_num_seqs * \
-                    self.uniform_decode_query_len
+                        self.uniform_decode_query_len
                 decode_cudagraph_batch_sizes = [
                     x for x in self.cudagraph_batch_sizes if
                     x <= max_num_tokens and x >= self.uniform_decode_query_len
@@ -2684,7 +2684,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                             uniform_decode: bool):
         assert cudagraph_runtime_mode != CUDAGraphMode.NONE and \
             cudagraph_runtime_mode in [CUDAGraphMode.FULL,
-                                       CUDAGraphMode.PIECEWISE]
+                                        CUDAGraphMode.PIECEWISE]
 
         # Only rank 0 should print progress bar during capture
         if is_global_first_rank():
@@ -2786,7 +2786,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         cudagraph_mode = self.compilation_config.cudagraph_mode
         # check cudagraph for mixed batch is supported
         if cudagraph_mode.mixed_mode() == CUDAGraphMode.FULL \
-                and min_cg_support != AttentionCGSupport.ALWAYS:
+            and min_cg_support != AttentionCGSupport.ALWAYS:
             msg = (f"CUDAGraphMode.{cudagraph_mode.name} is not supported "
                    f"with {min_cg_builder_name} backend (support: "
                    f"{min_cg_support})")
@@ -2828,7 +2828,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # double check that we can support full cudagraph if they are requested
         # even after automatic downgrades
         if cudagraph_mode.has_full_cudagraphs() \
-                and min_cg_support == AttentionCGSupport.NEVER:
+            and min_cg_support == AttentionCGSupport.NEVER:
             raise ValueError(f"CUDAGraphMode.{cudagraph_mode.name} is not "
                              f"supported with {min_cg_builder_name} backend ("
                              f"support:{min_cg_support}) "
@@ -2856,7 +2856,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             if reorder_batch_threshold_i is not None:
                 if self.reorder_batch_threshold is not None:
                     if reorder_batch_threshold_i != \
-                            self.reorder_batch_threshold:
+                        self.reorder_batch_threshold:
                         raise ValueError(
                             f"Attention backend reorders decodes with "
                             f"threshold {reorder_batch_threshold_i} but other "

@@ -27,7 +27,7 @@ from vllm.sequence import IntermediateTensors
 from vllm.tasks import SupportedTask
 from vllm.utils import GiB_bytes, MemorySnapshot, memory_profiling
 from vllm.worker.worker_base import LocalOrDistributedWorkerBase
-from vllm.worker.model_runner import ModelRunner
+from vllm.worker_controller.worker.model_runner import ModelRunner
 from vllm.sequence import ExecuteModelRequest, PoolerOutput
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.worker_controller.config.vllm_config import DummyVllmConfig
