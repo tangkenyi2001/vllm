@@ -76,7 +76,7 @@ class WorkerController:
         cache_config = CacheConfig(gpu_memory_utilization=0.85)
         parallel_config = ParallelConfig(
             world_size=2,
-            worker_cls='vllm.worker_controller.gpu_worker.Worker')
+            worker_cls='vllm.worker_controller.worker.gpu_worker.Worker')
 
         dummy_vllm_config = DummyVllmConfig(model_config=model_config,
                                             cache_config=cache_config,

@@ -33,7 +33,7 @@ def _build_vllm_config_from_dict(config_dict: Dict[str, Any]) -> VllmConfig:
 
     # Ensure worker_cls is set for parallel_config
     if "worker_cls" not in parallel_config_dict:
-        parallel_config_dict["worker_cls"] = "vllm.worker_controller.gpu_worker.Worker"
+        parallel_config_dict["worker_cls"] = "vllm.worker_controller.worker.gpu_worker.Worker"
 
     # Build ModelConfig
     model_config = ModelConfig(**model_config_dict)
@@ -212,7 +212,7 @@ def create_engine(request: EngineCreateRequest):
                 tensor_parallel_size=request.tensor_parallel_size,
                 pipeline_parallel_size=request.pipeline_parallel_size,
                 world_size=world_size,
-                worker_cls='vllm.worker_controller.gpu_worker.Worker'
+                worker_cls='vllm.worker_controller.worker.gpu_worker.Worker'
             )
 
             observability_config = ObservabilityConfig()
