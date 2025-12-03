@@ -453,14 +453,9 @@ def run_mp_engine(vllm_config: VllmConfig, usage_context: UsageContext,
     try:
         # Ensure we can serialize transformer config before spawning
         maybe_register_config_serialize_by_value()
-        import vllm.worker_controller.globalvar.global_var as gv
         # Later, when reading:
         import os
         print(f"Reading in PID engine process: {os.getpid()}")
-        mq = MessageQueue.create_writer_from_handle(args.RPC_MQ_HANDLE)
-        gv.RPC_MQ = mq
-        gv.WORKERS = args.WORKERS
-        print(gv.RPC_MQ)
         engine = MQLLMEngine.from_vllm_config(
             vllm_config=vllm_config,
             usage_context=usage_context,

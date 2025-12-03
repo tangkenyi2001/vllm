@@ -450,9 +450,6 @@ class LLMEngine:
             from vllm.executor.uniproc_executor import (  # noqa
                 ExecutorWithExternalLauncher)
             executor_class = ExecutorWithExternalLauncher
-        elif distributed_executor_backend == "distributed_system":
-            from vllm.worker_controller.executor.modified_executor import ModifiedExecutor
-            executor_class = ModifiedExecutor
         else:
             raise ValueError("unrecognized distributed_executor_backend: "
                              f"{distributed_executor_backend}")

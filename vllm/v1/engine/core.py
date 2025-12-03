@@ -75,9 +75,6 @@ class EngineCore:
                     VLLM_VERSION, vllm_config)
 
         self.log_stats = log_stats
-        import vllm.worker_controller.globalvar.global_var as gv
-        # pass the MQ in
-        logger.info(f"RPC_MQ {gv.RPC_MQ}")
         # Setup Model.
         self.model_executor = executor_class(vllm_config)
         logger.info(self.model_executor)

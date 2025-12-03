@@ -175,11 +175,8 @@ async def build_async_engine_client(
         # For RemoteExecutor, create a minimal engine_args (won't be used)
         engine_args = AsyncEngineArgs(model=args.model)
     else:
-        # Standard path: build engine args from vllmconfig or CLI
-        import vllm.worker_controller.globalvar.global_var as gv
-        # engine_args = AsyncEngineArgs.from_cli_args(args)
-        engine_args = AsyncEngineArgs.async_engine_args_from_vllm_config(
-            gv.VLLM_CONFIG)
+        # Standard path: build engine args from CLI
+        engine_args = AsyncEngineArgs.from_cli_args(args)
     if disable_frontend_multiprocessing is None:
         disable_frontend_multiprocessing = bool(
             args.disable_frontend_multiprocessing)
@@ -349,17 +346,12 @@ async def build_async_engine_client_from_engine_args(
         # The Process can raise an exception during startup, which may
         # not actually result in an exitcode being reported. As a result
         # we use a shared variable to communicate the information.
-        import vllm.worker_controller.globalvar.global_var as gv
         # Later, when reading:
         print(f"Reading in PID before creating engine: {os.getpid()}")
-        args.RPC_MQ_HANDLE = gv.RPC_MQ.handle
-        # Remove the unpicklable MessageQueue object
-        args.WORKERS = gv.WORKERS
         if hasattr(args, "RPC_MQ"):
             delattr(args, "RPC_MQ")
         if hasattr(args, "rpc_broadcast_mq"):
             del args.rpc_broadcast_mq
-        print(args.WORKERS)
         # print(vars(args))
         engine_alive = multiprocessing.Value('b', True, lock=False)
         engine_process = context.Process(

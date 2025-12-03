@@ -1,3 +1,0 @@
-VLLM_CONFIG = None
-RPC_MQ = None
-WORKERS = None
