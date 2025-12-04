@@ -96,7 +96,7 @@ def test_parallel_load():
             "engine_uuid": engine1_uuid,
             "model": model1_name,
             "gpu_memory_utilization": 0.3,
-            "tensor_parallel_size": 1
+            "tensor_parallel_size": 1,
         }
         resp1 = requests.post(f"{base_url}/engines", json=create_payload1)
         if resp1.status_code != 200:
@@ -113,7 +113,7 @@ def test_parallel_load():
             "engine_uuid": engine2_uuid,
             "model": model2_name,
             "gpu_memory_utilization": 0.3,
-            "tensor_parallel_size": 1
+            "tensor_parallel_size": 1,
         }
         resp2 = requests.post(f"{base_url}/engines", json=create_payload2)
         if resp2.status_code != 200:
