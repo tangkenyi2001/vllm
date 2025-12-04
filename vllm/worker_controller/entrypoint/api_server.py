@@ -252,7 +252,7 @@ async def build_async_engine_client_from_engine_args(
                 usage_context=usage_context,
             )
 
-            logger.info(f"RemoteExecutor engine created on port {args.port}")
+            logger.info("RemoteExecutor engine created on port %s", args.port)
             yield engine_client
 
         finally:

@@ -48,14 +48,14 @@ class ResourceAllocator:
             for rank in assigned_ranks:
                 self.resources[rank] = 0
                 del self.rank_to_uid[rank]
-            
+
             # Roll back port assignment
             del self.uuid_to_port[uuid]
             if port == self.next_port - 1:
                 self.next_port -= 1
             else:
                 self.free_ports.append(port)
-                
+
             raise RuntimeError(
                 f"Only {len(assigned_ranks)} free resources, requested {num}")
 
@@ -81,7 +81,7 @@ class ResourceAllocator:
         port = self.uuid_to_port.pop(uid, None)
         if port is not None:
             self.free_ports.append(port)
-            
+
         return released_ranks, port
 
 
@@ -131,12 +131,12 @@ class WorkerController:
             engine_info = self.executor.engines[engine_uuid]
             proc = engine_info.get("proc")
             if proc and proc.is_alive():
-                logger.info(f"Terminating API server process {proc.pid}")
+                logger.info("Terminating API server process %s", proc.pid)
                 proc.terminate()
                 proc.join(timeout=5)
                 if proc.is_alive():
                     logger.warning(
-                        f"Force killing API server process {proc.pid}")
+                        "Force killing API server process %s", proc.pid)
                     proc.kill()
 
         # Delegate to ProxyExecutor which handles worker unloading
