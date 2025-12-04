@@ -88,7 +88,7 @@ if TYPE_CHECKING:
     from vllm.model_executor.model_loader.tensorizer import TensorizerConfig
 
     ConfigType = type[DataclassInstance]
-    HfOverrides = Union[dict, Callable[[type], type]]
+    HfOverrides = dict | Callable[[type], type]
 else:
     DataclassInstance = Any
     PlacementGroup = Any
@@ -98,9 +98,11 @@ else:
     QuantizationMethods = Any
     BaseModelLoader = Any
     LoadFormats = Any
+    ConfigType = Any
+    HfOverrides = Any
     TensorizerConfig = Any
     ConfigType = type
-    HfOverrides = Union[dict[str, Any], Callable[[type], type]]
+    HfOverrides = dict[str, Any] | Callable[[type], type]
 
     me_quant = LazyLoader("model_executor", globals(),
                           "vllm.model_executor.layers.quantization")
@@ -310,7 +312,7 @@ class DummyModelConfig:
     """Convert the model using adapters defined in
     [vllm.model_executor.models.adapters][]. The most common use case is to
     adapt a text generation model to be used for pooling tasks."""
-    task: Optional[TaskOption] = None
+    task: TaskOption | None = None
     """[DEPRECATED] The task to use the model for. If the model supports more
     than one model runner, this is used to select which model runner to run.
 
@@ -328,7 +330,7 @@ class DummyModelConfig:
     trust_remote_code: bool = False
     """Trust remote code (e.g., from HuggingFace) when downloading the model
     and tokenizer."""
-    dtype: Union[ModelDType, torch.dtype] = "auto"
+    dtype: ModelDType | torch.dtype = "auto"
     """Data type for model weights and activations:\n
     - "auto" will use FP16 precision for FP32 and FP16 models, and BF16
     precision for BF16 models.\n
@@ -337,30 +339,30 @@ class DummyModelConfig:
     - "bfloat16" for a balance between precision and range.\n
     - "float" is shorthand for FP32 precision.\n
     - "float32" for FP32 precision."""
-    seed: Optional[int] = None
+    seed: int | None = None
     """Random seed for reproducibility. Initialized to None in V0, but
     initialized to 0 in V1."""
-    hf_config_path: Optional[str] = None
+    hf_config_path: str | None = None
     """Name or path of the Hugging Face config to use. If unspecified, model
     name or path will be used."""
     allowed_local_media_path: str = ""
     """Allowing API requests to read local images or videos from directories
     specified by the server file system. This is a security risk. Should only
     be enabled in trusted environments."""
-    revision: Optional[str] = None
+    revision: str | None = None
     """The specific model version to use. It can be a branch name, a tag name,
     or a commit id. If unspecified, will use the default version."""
-    code_revision: Optional[str] = None
+    code_revision: str | None = None
     """The specific revision to use for the model code on the Hugging Face Hub.
     It can be a branch name, a tag name, or a commit id. If unspecified, will
     use the default version."""
     rope_scaling: dict[str, Any] = field(default_factory=dict)
     """RoPE scaling configuration. For example,
     `{"rope_type":"dynamic","factor":2.0}`."""
-    rope_theta: Optional[float] = None
+    rope_theta: float | None = None
     """RoPE theta. Use with `rope_scaling`. In some cases, changing the RoPE
     theta improves the performance of the scaled model."""
-    tokenizer_revision: Optional[str] = None
+    tokenizer_revision: str | None = None
     """The specific revision to use for the tokenizer on the Hugging Face Hub.
     It can be a branch name, a tag name, or a commit id. If unspecified, will
     use the default version."""
@@ -373,9 +375,9 @@ class DummyModelConfig:
     - 1k -> 1000\n
     - 1K -> 1024\n
     - 25.6k -> 25,600"""
-    spec_target_max_model_len: Optional[int] = None
+    spec_target_max_model_len: int | None = None
     """Specify the maximum length for spec decoding draft models."""
-    quantization: SkipValidation[Optional[QuantizationMethods]] = None
+    quantization: SkipValidation[QuantizationMethods | None] = None
     """Method used to quantize the weights. If `None`, we first check the
     `quantization_config` attribute in the model config file. If that is
     `None`, we assume the model weights are not quantized and use `dtype` to
@@ -419,7 +421,7 @@ class DummyModelConfig:
     """If `True`, enables passing text embeddings as inputs via the
     `prompt_embeds` key. Note that enabling this will double the time required
     for graph compilation."""
-    served_model_name: Optional[Union[str, list[str]]] = None
+    served_model_name: str | list[str] | None = None
     """The model name(s) used in the API. If multiple names are provided, the
     server will respond to any of the provided names. The model name in the
     model field of a response will be the first name in this list. If not
@@ -439,20 +441,20 @@ class DummyModelConfig:
     `--media-io-kwargs '{"video": {"num_frames": 40} }'` """
     use_async_output_proc: bool = True
     """Whether to use async output processor."""
-    config_format: Union[str, ConfigFormat] = ConfigFormat.AUTO.value
+    config_format: str | ConfigFormat = ConfigFormat.AUTO.value
     """The format of the model config to load:\n
     - "auto" will try to load the config in hf format if available else it
     will try to load in mistral format.\n
     - "hf" will load the config in hf format.\n
     - "mistral" will load the config in mistral format."""
-    hf_token: Optional[Union[bool, str]] = None
+    hf_token: bool | str | None = None
     """The token to use as HTTP bearer authorization for remote files . If
     `True`, will use the token generated when running `huggingface-cli login`
     (stored in `~/.huggingface`)."""
     hf_overrides: HfOverrides = field(default_factory=dict)
     """If a dictionary, contains arguments to be forwarded to the Hugging Face
     config. If a callable, it is called to update the HuggingFace config."""
-    mm_processor_kwargs: Optional[dict[str, Any]] = None
+    mm_processor_kwargs: dict[str, Any] | None = None
     """Arguments to be forwarded to the model's processor for multi-modal data,
     e.g., image processor. Overrides for the multi-modal processor obtained
     from `AutoProcessor.from_pretrained`. The available overrides depend on the
@@ -466,14 +468,14 @@ class DummyModelConfig:
     that are specific to Neuron devices, this argument will be used to
     configure the neuron config that can not be gathered from the vllm
     arguments. e.g. `{"cast_logits_dtype": "bfloat16"}`."""
-    pooler_config: Optional["PoolerConfig"] = field(init=False)
+    pooler_config: "PoolerConfig" | None = field(init=False)
     """Pooler config which controls the behaviour of output pooling in pooling
     models."""
-    override_pooler_config: Optional[Union[dict, "PoolerConfig"]] = None
+    override_pooler_config: dict | "PoolerConfig" | None = None
     """Initialize non-default pooling config or override default pooling config
     for the pooling model. e.g. `{"pooling_type": "mean", "normalize": false}`.
     """
-    logits_processor_pattern: Optional[str] = None
+    logits_processor_pattern: str | None = None
     """Optional regex pattern specifying valid logits processor qualified names
     that can be passed with the `logits_processors` extra completion argument.
     Defaults to `None`, which allows no processors."""
@@ -491,7 +493,7 @@ class DummyModelConfig:
     `--generation-config vllm`, only the override parameters are used."""
     enable_sleep_mode: bool = False
     """Enable sleep mode for the engine (only cuda platform is supported)."""
-    model_impl: Union[str, ModelImpl] = ModelImpl.AUTO.value
+    model_impl: str | ModelImpl = ModelImpl.AUTO.value
     """Which implementation of the model to use:\n
     - "auto" will try to use the vLLM implementation, if it exists, and fall
     back to the Transformers implementation if no vLLM implementation is
@@ -614,6 +616,8 @@ class DummyModelConfig:
                 "module was not found. See "
                 "https://github.com/vllm-project/vllm/blob/main/docker/Dockerfile "  # noqa: E501
                 "for instructions on how to install it.")
+
+        # hf_overrides_fn = self.hf_overrides # Unused
 
         from vllm.platforms import current_platform
 

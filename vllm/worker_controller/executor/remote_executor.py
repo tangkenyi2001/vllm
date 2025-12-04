@@ -62,11 +62,10 @@ class RemoteExecutor(ExecutorBase):
         self._num_cpu_blocks = num_cpu_blocks
 
         logger.info(
-            f"RemoteExecutor initialized for engine '{engine_uuid}' "
-            f"with {vllm_config.parallel_config.world_size} workers"
-        )
-        logger.info(
-            f"Pre-calculated blocks: {num_gpu_blocks} GPU, {num_cpu_blocks} CPU")
+            "RemoteExecutor initialized for engine '%s' with %s workers",
+            engine_uuid, vllm_config.parallel_config.world_size)
+        logger.info("Pre-calculated blocks: %s GPU, %s CPU", num_gpu_blocks,
+                    num_cpu_blocks)
 
     def _init_executor(self) -> None:
         """Initialize the executor (already done in __init__)."""
@@ -112,8 +111,8 @@ class RemoteExecutor(ExecutorBase):
         Returns:
             Tuple of (num_gpu_blocks, num_cpu_blocks)
         """
-        logger.info(f"Returning pre-calculated blocks: "
-                    f"{self._num_gpu_blocks} GPU, {self._num_cpu_blocks} CPU")
+        logger.info("Returning pre-calculated blocks: %s GPU, %s CPU",
+                    self._num_gpu_blocks, self._num_cpu_blocks)
         return self._num_gpu_blocks, self._num_cpu_blocks
 
     def initialize_cache(
@@ -127,10 +126,8 @@ class RemoteExecutor(ExecutorBase):
             num_gpu_blocks: Number of GPU blocks to allocate
             num_cpu_blocks: Number of CPU blocks to allocate
         """
-        logger.info(
-            f"Initializing cache with {num_gpu_blocks} GPU blocks, "
-            f"{num_cpu_blocks} CPU blocks"
-        )
+        logger.info("Initializing cache with %s GPU blocks, %s CPU blocks",
+                    num_gpu_blocks, num_cpu_blocks)
         self._send_rpc("initialize_cache", num_gpu_blocks, num_cpu_blocks)
         logger.info("Cache initialized successfully")
 
@@ -166,22 +163,22 @@ class RemoteExecutor(ExecutorBase):
         """Check if workers are healthy via ProxyExecutor."""
         try:
             self._send_rpc("check_health")
+        try:
+            self._send_rpc("check_health")
             logger.info("Health check passed")
         except Exception as e:
-            logger.error(f"Health check failed: {e}")
+            logger.error("Health check failed: %s", e)
             raise
 
     def collective_rpc(self, *args, **kwargs):
-        """Not used in RemoteExecutor - all RPC goes through ProxyExecutor."""
-        raise NotImplementedError(
             "collective_rpc should not be called directly on RemoteExecutor. "
             "All RPC calls are forwarded to ProxyExecutor via MessageQueue."
         )
 
     def shutdown(self) -> None:
         """Shutdown the executor."""
-        logger.info(
-            f"RemoteExecutor shutting down for engine '{self.engine_uuid}'")
+        logger.info("RemoteExecutor shutting down for engine '%s'",
+                    self.engine_uuid)
         # MessageQueues will be cleaned up by ProxyExecutor
 
     def __del__(self):

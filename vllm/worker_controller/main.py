@@ -29,11 +29,12 @@ def _build_vllm_config_from_dict(config_dict: Dict[str, Any]) -> VllmConfig:
     model_config_dict = config_dict.get("model_config", {})
     cache_config_dict = config_dict.get("cache_config", {})
     parallel_config_dict = config_dict.get("parallel_config", {})
-    scheduler_config_dict = config_dict.get("scheduler_config", {})
 
     # Ensure worker_cls is set for parallel_config
     if "worker_cls" not in parallel_config_dict:
-        parallel_config_dict["worker_cls"] = "vllm.worker_controller.worker.gpu_worker.Worker"
+        parallel_config_dict["worker_cls"] = (
+            "vllm.worker_controller.worker.gpu_worker.Worker"
+        )
 
     # Build ModelConfig
     model_config = ModelConfig(**model_config_dict)
@@ -128,7 +129,9 @@ async def startup_event():
     logger.info("Initializing WorkerController...")
     worker_controller = WorkerController()
     logger.info(
-        f"WorkerController initialized with {len(worker_controller.executor.workers)} workers")
+        "WorkerController initialized with %s workers",
+        len(worker_controller.executor.workers)
+    )
 
 
 @app.get("/")
@@ -165,11 +168,13 @@ def create_engine(request: EngineCreateRequest):
         # Check if using advanced format with vllm_config dict
         if request.vllm_config is not None:
             logger.info(
-                f"Creating engine {request.engine_uuid} with advanced vllm_config")
+                "Creating engine %s with advanced vllm_config",
+                request.engine_uuid
+            )
 
             # Build VllmConfig from nested dict structure
             vllm_config = _build_vllm_config_from_dict(request.vllm_config)
-            model_name = vllm_config.model_config.model
+            # model_name = vllm_config.model_config.model # Unused
 
         else:
             # Simple format - build from flat parameters
@@ -180,7 +185,10 @@ def create_engine(request: EngineCreateRequest):
                 )
 
             logger.info(
-                f"Creating engine {request.engine_uuid} with model {request.model}")
+                "Creating engine %s with model %s",
+                request.engine_uuid,
+                request.model
+            )
 
             model_config = ModelConfig(
                 model=request.model,
@@ -219,7 +227,7 @@ def create_engine(request: EngineCreateRequest):
                 compilation_config=compilation_config,
                 device_config=device_config,
             )
-            model_name = request.model
+            # model_name = request.model # Unused
 
         # Create engine: this assigns workers, loads model, calculates blocks,
         # and spawns API server with RemoteExecutor
@@ -232,7 +240,10 @@ def create_engine(request: EngineCreateRequest):
             request.engine_uuid)
 
         logger.info(
-            f"Engine {request.engine_uuid} created successfully on port {port}")
+            "Engine %s created successfully on port %s",
+            request.engine_uuid,
+            port
+        )
 
         return EngineStatusResponse(
             engine_uuid=request.engine_uuid,
@@ -245,10 +256,10 @@ def create_engine(request: EngineCreateRequest):
         )
 
     except Exception as e:
-        logger.error(f"Failed to create engine {request.engine_uuid}: {e}")
+        logger.error("Failed to create engine %s: %s", request.engine_uuid, e)
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.delete("/engines/{engine_uuid}")
@@ -265,7 +276,7 @@ def delete_engine(engine_uuid: str):
         raise HTTPException(
             status_code=503, detail="WorkerController not initialized")
 
-    logger.info(f"Deleting engine {engine_uuid}")
+    logger.info("Deleting engine %s", engine_uuid)
 
     try:
         # Check if engine exists
@@ -283,7 +294,11 @@ def delete_engine(engine_uuid: str):
         worker_controller.delete(engine_uuid)
 
         logger.info(
-            f"Engine {engine_uuid} deleted, released ranks {assigned_ranks} and port {port}")
+            "Engine %s deleted, released ranks %s and port %s",
+            engine_uuid,
+            assigned_ranks,
+            port
+        )
 
         return {
             "message": f"Engine {engine_uuid} deleted successfully",
@@ -294,10 +309,10 @@ def delete_engine(engine_uuid: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to delete engine {engine_uuid}: {e}")
+        logger.error("Failed to delete engine %s: %s", engine_uuid, e)
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/engines/{engine_uuid}", response_model=EngineStatusResponse)
@@ -350,7 +365,7 @@ def list_engines():
             status = get_engine_status(engine_uuid)
             engines.append(status.dict())
         except Exception as e:
-            logger.error(f"Error getting status for {engine_uuid}: {e}")
+            logger.error("Error getting status for %s: %s", engine_uuid, e)
 
     return {"num_engines": len(engines), "engines": engines}
 

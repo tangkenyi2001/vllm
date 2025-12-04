@@ -122,7 +122,7 @@ class ProxyExecutor((Executor)):
 
         try:
             for rank in range(self.world_size):
-                logger.info(f"Creating Worker${rank}")
+                logger.info("Creating Worker$%d", rank)
                 unready_workers.append(
                     WorkerProc.make_worker_process(
                         vllm_config=self.vllm_config,
@@ -142,7 +142,7 @@ class ProxyExecutor((Executor)):
                     "parent_send": w.parent_send, "parent_recv": w.parent_recv}
 
             logger.info("PipeDictionary")
-            logger.info(f"{self.pipes}")
+            logger.info("%s", self.pipes)
 
             self.start_worker_monitor()
             self.start_api_server_request_loop()
@@ -178,14 +178,15 @@ class ProxyExecutor((Executor)):
     def create(self, vllm_config: Union[VllmConfig, DummyVllmConfig], engineUUID: str):
         """Create an API server with MessageQueue-based RPC to this ProxyExecutor."""
         required = vllm_config.parallel_config.world_size
-        logger.info(f"World Size {required}")
+        logger.info("World Size %s", required)
 
         # Disable CUDA graphs for worker controller
         vllm_config.compilation_config.use_cudagraph = False
 
         # Assign workers to this engine
         assigned_ranks, port = self.resource.assign(required, engineUUID)
-        logger.info(f"Assigned ranks {assigned_ranks} to engine {engineUUID}")
+        logger.info("Assigned ranks %s to engine %s",
+                    assigned_ranks, engineUUID)
 
         # Send "hold" RPC to workers via collective_rpc
         results = self.collective_rpc(
@@ -193,7 +194,7 @@ class ProxyExecutor((Executor)):
             args=(vllm_config, engineUUID),
             target_ranks=assigned_ranks
         )
-        logger.info(f"Workers held: {results}")
+        logger.info("Workers held: %s", results)
 
         # Send "load_model" RPC to workers via collective_rpc
         results = self.collective_rpc(
@@ -201,7 +202,7 @@ class ProxyExecutor((Executor)):
             args=(vllm_config,),
             target_ranks=assigned_ranks
         )
-        logger.info(f"Models loaded: {results}")
+        logger.info("Models loaded: %s", results)
 
         # Calculate available blocks after model is loaded
         # Query first worker only since they all have the same model
@@ -212,7 +213,7 @@ class ProxyExecutor((Executor)):
         )
         num_gpu_blocks, num_cpu_blocks = results[0]
         logger.info(
-            f"Available blocks: {num_gpu_blocks} GPU, {num_cpu_blocks} CPU")
+            "Available blocks: %s GPU, %s CPU", num_gpu_blocks, num_cpu_blocks)
 
         # Initialize KV Cache on workers
         self.collective_rpc(
@@ -264,7 +265,8 @@ class ProxyExecutor((Executor)):
         }
 
         logger.info(
-            f"Engine {engineUUID} created with workers {assigned_ranks} on port {port}")
+            "Engine %s created with workers %s on port %s",
+            engineUUID, assigned_ranks, port)
 
         return proc
 
@@ -279,7 +281,7 @@ class ProxyExecutor((Executor)):
 
         # Release workers from resource allocator
         released_ranks, port = self.resource.release_by_uuid(engineUUID)
-        logger.info(f"Released ranks {released_ranks} and port {port}")
+        logger.info("Released ranks %s and port %s", released_ranks, port)
 
         # Unload models from workers
         results = self.collective_rpc(
@@ -287,7 +289,7 @@ class ProxyExecutor((Executor)):
             args=(),
             target_ranks=assigned_ranks
         )
-        logger.info(f"Unload model results: {results}")
+        logger.info("Unload model results: %s", results)
 
         # Unhold workers
         results = self.collective_rpc(
@@ -295,7 +297,7 @@ class ProxyExecutor((Executor)):
             args=(),
             target_ranks=assigned_ranks
         )
-        logger.info(f"Unhold results: {results}")
+        logger.info("Unhold results: %s", results)
 
         # Clean up API server message queues
         if engineUUID in self.api_request_queues:
@@ -357,7 +359,7 @@ class ProxyExecutor((Executor)):
                             response_queue.put(("success", result))
                         except Exception as e:
                             logger.exception(
-                                f"Error handling API server request: {e}")
+                                "Error handling API server request: %s", e)
                             response_queue.put(("error", str(e)))
                     except Exception:
                         # Timeout or queue closed, continue
@@ -370,7 +372,7 @@ class ProxyExecutor((Executor)):
     def _handle_api_server_request(self, engine_uuid: str, method: str, args: tuple, kwargs: dict):
         """Handle an RPC request from an API server."""
         logger.debug(
-            f"Handling API server request: {method} for engine {engine_uuid}")
+            "Handling API server request: %s for engine %s", method, engine_uuid)
 
         # Get the target ranks for this engine
         target_ranks = self.resource.get_ranks_by_uuid(engine_uuid)
@@ -693,7 +695,7 @@ class WorkerProc:
         }
         wrapper.init_worker(all_kwargs)
         self.worker = wrapper
-        logger.info(f"wrapper.init_worker {rank} completed")
+        logger.info("wrapper.init_worker %s completed", rank)
         logger.info(wrapper.worker)
 
         # Initialize MessageQueue for receiving SchedulerOutput
@@ -744,14 +746,15 @@ class WorkerProc:
         writer.close()
         # Keep death_writer open in parent - when parent exits,
         # death_reader in child will get EOFError
-        return UnreadyWorkerProcHandle(proc, rank, reader, parent_send, parent_recv, death_writer)
+        return UnreadyWorkerProcHandle(
+            proc, rank, reader, parent_send, parent_recv, death_writer)
 
     def reset_to_empty_state(self):
         """Reset this worker to empty state (unload model)."""
         if hasattr(self, 'worker') and self.worker is not None:
             # Unload model and reset worker
             self.worker = None
-            logger.info(f"Worker {self.rank} reset to empty state")
+            logger.info("Worker %s reset to empty state", self.rank)
 
     @staticmethod
     def wait_for_ready(
@@ -804,7 +807,7 @@ class WorkerProc:
         """ Worker initialization and execution loops.
         This runs a background process """
         logger = init_logger("worker")
-        logger.info(f"Worker {os.getpid()} started")
+        logger.info("Worker %s started", os.getpid())
 
         # Signal handler used for graceful termination.
         # SystemExit exception is only raised once to allow this and worker
@@ -831,7 +834,7 @@ class WorkerProc:
         child_recv = kwargs.pop("child_recv", None)
         child_send = kwargs.pop("child_send", None)
 
-        logger.info(f"Worker {os.getpid()}")
+        logger.info("Worker %s", os.getpid())
         # Start death monitoring thread if death_pipe is provided
         if death_pipe is not None:
 
@@ -857,7 +860,7 @@ class WorkerProc:
 
             # Redirect subprocess output to log files
 
-            logger.info(f"Worker{kwargs['local_rank']} going to be set up")
+            logger.info("Worker%s going to be set up", kwargs['local_rank'])
             # Only create worker if vllm_config is provided
             worker = WorkerProc(*args, **kwargs)
 
@@ -910,7 +913,7 @@ class WorkerProc:
         logger = init_logger(f"Worker {os.getpid()}")
         while True:
             method, args, kwargs, output_rank = self.rpc_broadcast_mq.dequeue()
-            
+
             # Only execute and respond if this worker is the target (or broadcast)
             if output_rank is None or self.rank == output_rank:
                 try:
@@ -919,10 +922,10 @@ class WorkerProc:
                     elif isinstance(method, bytes):
                         func = partial(cloudpickle.loads(method), self.worker)
                     output = func(*args, **kwargs)
-                    
+
                     self.worker_response_mq.enqueue(
                         (WorkerProc.ResponseStatus.SUCCESS, output))
-                        
+
                 except Exception as e:
                     # Notes have been introduced in python 3.11
                     if hasattr(e, "add_note"):

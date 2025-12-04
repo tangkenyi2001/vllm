@@ -238,11 +238,14 @@ class Worker(LocalOrDistributedWorkerBase):
         self.current_platform = current_platform
 
     def hold(self, vllmconfig: VllmConfig, invokerId: str):
-        logger.info(f"{vllmconfig}")
+        logger.info("%s", vllmconfig)
         if self.invoke and self.invoke != invokerId:
             # Allow re-holding by the same invoker or unhold first
             logger.warning(
-                f"Worker already held by {self.invoke}, being re-held by {invokerId}")
+                "Worker already held by %s, being re-held by %s",
+                self.invoke,
+                invokerId
+            )
             self.unhold()
         # set invoked
         self.invoke = invokerId
@@ -250,14 +253,14 @@ class Worker(LocalOrDistributedWorkerBase):
         self.vllm_config = vllmconfig
         # need to reload vllmconfig
         self.reload()
-        logger.info(f"{os.getpid()} Hold worker called by {invokerId}")
+        logger.info("%s Hold worker called by %s", os.getpid(), invokerId)
         res = f"{os.getpid()} Model held"
         return res
 
     def unhold(self):
         if not self.invoke:
             raise RuntimeError("This worker has has not been invoked")
-        logger.info(f"{os.getpid()} unhold worker called by {self.invoke}")
+        logger.info("%s unhold worker called by %s", os.getpid(), self.invoke)
         self.invoke = None
         res = f"{os.getpid()} Model unheld"
         return res
@@ -268,13 +271,13 @@ class Worker(LocalOrDistributedWorkerBase):
         This allows updating worker configuration after initialization,
         which is useful for dynamic model loading scenarios.
         """
-        logger.info(f"{os.getpid()} Updating vllm config")
-        logger.info(f"{vllmconfig}")
+        logger.info("%s Updating vllm config", os.getpid())
+        logger.info("%s", vllmconfig)
         # Set vllmconfig
         self.vllm_config = vllmconfig
         # Reload all config components
         self.reload()
-        logger.info(f"{os.getpid()} vllm config updated")
+        logger.info("%s vllm config updated", os.getpid())
         return f"{os.getpid()} Config updated"
 
     def is_model_loaded(self) -> dict:
@@ -284,13 +287,19 @@ class Worker(LocalOrDistributedWorkerBase):
 
         try:
             model = self.model_runner.get_model()
-            return {"loaded": True, "pid": os.getpid(), "model_class": type(model).__name__, "device": str(self.device), "model_name": self.model_config.model}
+            return {
+                "loaded": True,
+                "pid": os.getpid(),
+                "model_class": type(model).__name__,
+                "device": str(self.device),
+                "model_name": self.model_config.model
+            }
         except Exception as e:
             return {"loaded": False, "pid": os.getpid(), "error": str(e)}
 
     def load_model(self, vllmconfig: VllmConfig) -> str:
-        logger.info(f"{os.getpid()} LOAD MODEL CALLED")
-        logger.info(f"{vllmconfig}")
+        logger.info("%s LOAD MODEL CALLED", os.getpid())
+        logger.info("%s", vllmconfig)
         # create ModelRunner (V0) - it only takes vllm_config and a few optional params
         self.model_runner: ModelRunner = ModelRunner(
             vllm_config=vllmconfig,
@@ -303,7 +312,7 @@ class Worker(LocalOrDistributedWorkerBase):
         return res
 
     def unload_model(self) -> str:
-        logger.info(f"{os.getpid()} unload model called")
+        logger.info("%s unload model called", os.getpid())
         # Release model runner
         self.model_runner = None
         gc.collect()
@@ -407,12 +416,12 @@ class Worker(LocalOrDistributedWorkerBase):
         # NOTE: This is called after `capture_model` on purpose to prevent
         # memory buffers from being cleared by `torch.cuda.empty_cache`.
         if get_pp_group().is_last_rank:
-            max_num_reqs = min(self.scheduler_config.max_num_seqs,
-                               self.scheduler_config.max_num_batched_tokens)
+            # max_num_reqs = min(self.scheduler_config.max_num_seqs,
+            #                    self.scheduler_config.max_num_batched_tokens)
             # activate building attn_metadata for this dummy run to avoid
             # potential illegal memory access for full cudagraph relay.
-            attn_cudagraph = self.compilation_config.full_cuda_graph and\
-                not self.model_config.enforce_eager
+            # attn_cudagraph = self.compilation_config.full_cuda_graph and\
+            #     not self.model_config.enforce_eager
 
             # We skip EPLB here since we don't want to record dummy metrics
             # skip cuda graph
@@ -427,8 +436,8 @@ class Worker(LocalOrDistributedWorkerBase):
             #     self.model_runner._dummy_sampler_run(
             #         hidden_states=last_hidden_states)
 
-        # Reset the seed to ensure that the random state is not affected by
-        # the model initialization and profiling.
+            # Reset the seed to ensure that the random state is not affected by
+            # the model initialization and profiling.
         set_random_seed(self.model_config.seed)
 
     def get_model(self) -> nn.Module:
