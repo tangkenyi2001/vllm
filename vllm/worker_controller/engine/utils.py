@@ -149,10 +149,7 @@ class CoreEngineProcManager:
 
     def finished_procs(self) -> dict[str, int]:
         """Returns dict of proc name -> exit code for any finished procs."""
-        return {
-            proc.name: proc.exitcode
-            for proc in self.processes if proc.exitcode is not None
-        }
+        return {proc.name: proc.exitcode for proc in self.processes if proc.exitcode is not None}
 
 
 @contextlib.contextmanager

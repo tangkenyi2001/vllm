@@ -280,27 +280,13 @@ class Worker(LocalOrDistributedWorkerBase):
     def is_model_loaded(self) -> dict:
         """Check if model is loaded and return status info."""
         if not hasattr(self, 'model_runner') or self.model_runner is None:
-            return {
-                "loaded": False,
-                "pid": os.getpid(),
-                "model": None
-            }
+            return {"loaded": False, "pid": os.getpid(), "model": None}
 
         try:
             model = self.model_runner.get_model()
-            return {
-                "loaded": True,
-                "pid": os.getpid(),
-                "model_class": type(model).__name__,
-                "device": str(self.device),
-                "model_name": self.model_config.model
-            }
+            return {"loaded": True, "pid": os.getpid(), "model_class": type(model).__name__, "device": str(self.device), "model_name": self.model_config.model}
         except Exception as e:
-            return {
-                "loaded": False,
-                "pid": os.getpid(),
-                "error": str(e)
-            }
+            return {"loaded": False, "pid": os.getpid(), "error": str(e)}
 
     def load_model(self, vllmconfig: VllmConfig) -> str:
         logger.info(f"{os.getpid()} LOAD MODEL CALLED")

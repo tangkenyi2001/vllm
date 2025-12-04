@@ -50,7 +50,7 @@ def test_load_unload_loop():
             "engine_uuid": engine_uuid,
             "model": model_name,
             "gpu_memory_utilization": 0.3,
-            "tensor_parallel_size": 1
+            "tensor_parallel_size": 1,
         }
         logger.info(f"Sending create engine request: {create_payload}")
         resp = requests.post(f"{base_url}/engines", json=create_payload)

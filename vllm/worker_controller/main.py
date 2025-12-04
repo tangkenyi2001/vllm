@@ -134,11 +134,7 @@ async def startup_event():
 @app.get("/")
 def read_root():
     """Root endpoint - health check."""
-    return {
-        "message": "Worker Controller API",
-        "status": "running",
-        "num_workers": len(worker_controller.executor.workers) if worker_controller else 0
-    }
+    return {"message": "Worker Controller API", "status": "running", "num_workers": len(worker_controller.executor.workers) if worker_controller else 0}
 
 
 @app.get("/health")
@@ -147,11 +143,7 @@ def health_check():
     if worker_controller is None:
         raise HTTPException(
             status_code=503, detail="WorkerController not initialized")
-    return {
-        "status": "healthy",
-        "num_workers": len(worker_controller.executor.workers),
-        "num_engines": len(worker_controller.executor.engines)
-    }
+    return {"status": "healthy", "num_workers": len(worker_controller.executor.workers), "num_engines": len(worker_controller.executor.engines)}
 
 
 @app.post("/engines", response_model=EngineStatusResponse)
@@ -360,10 +352,7 @@ def list_engines():
         except Exception as e:
             logger.error(f"Error getting status for {engine_uuid}: {e}")
 
-    return {
-        "num_engines": len(engines),
-        "engines": engines
-    }
+    return {"num_engines": len(engines), "engines": engines}
 
 
 @app.get("/workers")
@@ -381,10 +370,7 @@ def list_workers():
             "assigned_to": uuid if uuid != 0 else None
         })
 
-    return {
-        "num_workers": len(workers),
-        "workers": workers
-    }
+    return {"num_workers": len(workers), "workers": workers}
 
 
 if __name__ == "__main__":

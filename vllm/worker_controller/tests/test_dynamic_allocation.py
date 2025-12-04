@@ -90,12 +90,8 @@ def test_dynamic_allocation():
 
         # --- Step 1: Load OPT (Engine 1) ---
         logger.info(f"\n[1/6] Loading Engine 1 (OPT)...")
-        resp1 = requests.post(f"{base_url}/engines", json={
-            "engine_uuid": uuid_opt,
-            "model": model_opt,
-            "gpu_memory_utilization": 0.3,
-            "tensor_parallel_size": 1
-        })
+        resp1 = requests.post(f"{base_url}/engines", json={"engine_uuid": uuid_opt,
+                              "model": model_opt, "gpu_memory_utilization": 0.3, "tensor_parallel_size": 1})
         if resp1.status_code != 200:
             raise RuntimeError(f"Failed to create OPT: {resp1.text}")
         url_opt = resp1.json()["api_url"]
@@ -104,12 +100,8 @@ def test_dynamic_allocation():
 
         # --- Step 2: Load Qwen 1 (Engine 2) ---
         logger.info(f"\n[2/6] Loading Engine 2 (Qwen #1)...")
-        resp2 = requests.post(f"{base_url}/engines", json={
-            "engine_uuid": uuid_qwen_1,
-            "model": model_qwen,
-            "gpu_memory_utilization": 0.3,
-            "tensor_parallel_size": 1
-        })
+        resp2 = requests.post(f"{base_url}/engines", json={"engine_uuid": uuid_qwen_1,
+                              "model": model_qwen, "gpu_memory_utilization": 0.3, "tensor_parallel_size": 1})
         if resp2.status_code != 200:
             raise RuntimeError(f"Failed to create Qwen #1: {resp2.text}")
         url_qwen1 = resp2.json()["api_url"]
@@ -138,12 +130,8 @@ def test_dynamic_allocation():
         # --- Step 5: Load Qwen 2 (Engine 3) ---
         # Ideally this takes the place/resources of Engine 1
         logger.info(f"\n[5/6] Loading Engine 3 (Qwen #2) into freed slot...")
-        resp3 = requests.post(f"{base_url}/engines", json={
-            "engine_uuid": uuid_qwen_2,
-            "model": model_qwen,
-            "gpu_memory_utilization": 0.3,
-            "tensor_parallel_size": 1
-        })
+        resp3 = requests.post(f"{base_url}/engines", json={"engine_uuid": uuid_qwen_2,
+                              "model": model_qwen, "gpu_memory_utilization": 0.3, "tensor_parallel_size": 1})
         if resp3.status_code != 200:
             raise RuntimeError(f"Failed to create Qwen #2: {resp3.text}")
         url_qwen2 = resp3.json()["api_url"]
