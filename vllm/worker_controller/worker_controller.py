@@ -1,26 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-import logging
 
-from vllm.config import VllmConfig
 from vllm.logger import init_logger
+from vllm.worker_controller.config.vllm import VllmConfig
 from vllm.worker_controller.config.vllm_config import (
-    CacheConfig, DummyModelConfig, DummyVllmConfig, ParallelConfig)
+    CacheConfig,
+    DummyModelConfig,
+    DummyVllmConfig,
+    ParallelConfig,
+)
 from vllm.worker_controller.executor.proxy_executor import ProxyExecutor
 
 logger = init_logger(__name__)
 
 
 class ResourceAllocator:
-
     def __init__(self, number_of_gpus: int, start_port: int = 8001):
         # rank -> uid or 0 (free)
-        self.resources = {i: 0 for i in range(number_of_gpus)}
-        self.uuid_to_port = {}  # uid -> port
-        self.rank_to_uid = {}  # rank -> uid
+        self.resources: dict[int, int | str] = {i: 0 for i in range(number_of_gpus)}
+        self.uuid_to_port: dict[str, int] = {}  # uid -> port
+        self.rank_to_uid: dict[int, str] = {}  # rank -> uid
         self.start_port = start_port
         self.next_port = start_port
-        self.free_ports = []  # List of ports that were released and can be reused
+        self.free_ports: list[
+            int
+        ] = []  # List of ports that were released and can be reused
 
     def assign(self, num: int, uuid: str):
         """Assign `num` free GPUs to a given UUID and allocate a port."""
@@ -36,7 +40,7 @@ class ResourceAllocator:
                 self.next_port += 1
             self.uuid_to_port[uuid] = port
 
-        assigned_ranks = []
+        assigned_ranks: list[int] = []
         for rank, val in self.resources.items():
             if val == 0 and len(assigned_ranks) < num:
                 self.resources[rank] = uuid
@@ -57,7 +61,8 @@ class ResourceAllocator:
                 self.free_ports.append(port)
 
             raise RuntimeError(
-                f"Only {len(assigned_ranks)} free resources, requested {num}")
+                f"Only {len(assigned_ranks)} free resources, requested {num}"
+            )
 
         return assigned_ranks, port
 
@@ -86,22 +91,24 @@ class ResourceAllocator:
 
 
 class WorkerController:
-
     def __init__(self) -> None:
         # Modified Executor will create the empty worker processes and return the pipes
         model_config = DummyModelConfig("dummy", enforce_eager=True)
         cache_config = CacheConfig(gpu_memory_utilization=0.85)
         parallel_config = ParallelConfig(
-            world_size=2,
-            worker_cls='vllm.worker_controller.worker.gpu_worker.Worker')
+            world_size=2, worker_cls="vllm.worker_controller.worker.gpu_worker.Worker"
+        )
 
-        dummy_vllm_config = DummyVllmConfig(model_config=model_config,
-                                            cache_config=cache_config,
-                                            parallel_config=parallel_config)
+        dummy_vllm_config = DummyVllmConfig(
+            model_config=model_config,
+            cache_config=cache_config,
+            parallel_config=parallel_config,
+        )
 
         self.executor = ProxyExecutor(vllm_config=dummy_vllm_config)
         self.resource_allocator = ResourceAllocator(
-            number_of_gpus=dummy_vllm_config.parallel_config.world_size)
+            number_of_gpus=dummy_vllm_config.parallel_config.world_size
+        )
         # Set the resource allocator in the executor
         self.executor.resource = self.resource_allocator
         self.rpc_broadcast_mq = self.executor.rpc_broadcast_mq
@@ -135,8 +142,7 @@ class WorkerController:
                 proc.terminate()
                 proc.join(timeout=5)
                 if proc.is_alive():
-                    logger.warning(
-                        "Force killing API server process %s", proc.pid)
+                    logger.warning("Force killing API server process %s", proc.pid)
                     proc.kill()
 
         # Delegate to ProxyExecutor which handles worker unloading
