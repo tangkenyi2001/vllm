@@ -173,6 +173,10 @@ class InprocAsyncEngineCore:
         """Get model loading timing breakdown from workers."""
         return self.engine_core.get_model_load_timings()
 
+    def get_init_engine_time_seconds(self) -> float | None:
+        """Get engine init time (profile + KV cache + warmup)."""
+        return self.engine_core.get_init_engine_time_seconds()
+
     async def collective_rpc_async(
         self,
         method: str | Callable[..., _R],

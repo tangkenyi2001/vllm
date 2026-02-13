@@ -281,6 +281,7 @@ class Worker(WorkerBase):
                 - dist_init_time: Time to initialize distributed groups
                 - model_runner_init_time: Time to create model runner
                 - weight_load_time: Time to load model weights
+                - effective_model_load_time: model_runner_init_time + weight_load_time
                 - total_time: Total load time
         """
         import time as time_module
@@ -344,15 +345,34 @@ class Worker(WorkerBase):
         runner_start = time_module.time()
         self.model_runner: GPUModelRunner = GPUModelRunner(vllm_config, self.device)
         timings["model_runner_init_time"] = time_module.time() - runner_start
+        logger.info(
+            "Worker %s model_runner_init_time (includes model load done in runner init): %.3fs",
+            self.rank,
+            timings["model_runner_init_time"],
+        )
 
         weight_start = time_module.time()
         eep_scale_up = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
         with self._maybe_get_memory_pool_context(tag="weights"):
             self.model_runner.load_model(eep_scale_up=eep_scale_up)
         timings["weight_load_time"] = time_module.time() - weight_start
+        logger.info(
+            "Worker %s model_runner.load_model weight_load_time: %.3fs",
+            self.rank,
+            timings["weight_load_time"],
+        )
+
+        timings["effective_model_load_time"] = (
+            timings["model_runner_init_time"] + timings["weight_load_time"]
+        )
 
         timings["total_time"] = time_module.time() - total_start
 
+        logger.info(
+            "Worker %s effective model load time: %.3fs",
+            self.rank,
+            timings["effective_model_load_time"],
+        )
         logger.info(f"Worker {self.rank} load_model timings: {timings}")
         return timings
 

@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, model_validator
 import logging
 import os
+import time
 
 # Import WorkerController and config classes
 from vllm.worker_controller.worker_controller import WorkerController
@@ -121,6 +122,7 @@ class EngineStatusResponse(BaseModel):
     assigned_ranks: Optional[list[int]] = None
     model: Optional[str] = None
     pid: Optional[int] = None
+    create_timings: Optional[Dict[str, float]] = None
 
 
 app = FastAPI(
@@ -183,8 +185,14 @@ def create_engine(request: EngineCreateRequest):
         raise HTTPException(status_code=503, detail="WorkerController not initialized")
 
     try:
+        request_start = time.time()
+        config_build_time = 0.0
+        controller_create_time = 0.0
+        metadata_fetch_time = 0.0
+
         # Check if using advanced format with vllm_config dict
         if request.vllm_config is not None:
+            config_start = time.time()
             logger.info(
                 f"Creating engine {request.engine_uuid} with advanced vllm_config"
             )
@@ -192,6 +200,7 @@ def create_engine(request: EngineCreateRequest):
             # Build VllmConfig from nested dict structure
             vllm_config = _build_vllm_config_from_dict(request.vllm_config)
             model_name = vllm_config.model_config.model
+            config_build_time = time.time() - config_start
 
         else:
             # Simple format - build from flat parameters
@@ -204,6 +213,7 @@ def create_engine(request: EngineCreateRequest):
             logger.info(
                 f"Creating engine {request.engine_uuid} with model {request.model}"
             )
+            config_start = time.time()
 
             model_config = ModelConfig(
                 model=request.model,
@@ -243,18 +253,43 @@ def create_engine(request: EngineCreateRequest):
                 device_config=device_config,
             )
             model_name = request.model
+            config_build_time = time.time() - config_start
 
         # Create engine: this assigns workers, loads model, calculates blocks,
         # and spawns API server with RemoteExecutor
+        create_start = time.time()
         proc = worker_controller.create(vllm_config, request.engine_uuid)
+        controller_create_time = time.time() - create_start
 
         # Get assigned resources
+        metadata_start = time.time()
         assigned_ranks = worker_controller.resource_allocator.get_ranks_by_uuid(
             request.engine_uuid
         )
         port = worker_controller.resource_allocator.get_port_by_uuid(
             request.engine_uuid
         )
+        metadata_fetch_time = time.time() - metadata_start
+
+        engine_info = worker_controller.executor.engines.get(request.engine_uuid, {})
+        create_timings = engine_info.get("create_timings")
+
+        logger.info(
+            "create_engine request breakdown for %s: %s",
+            request.engine_uuid,
+            {
+                "config_build_time": round(config_build_time, 4),
+                "controller_create_time": round(controller_create_time, 4),
+                "metadata_fetch_time": round(metadata_fetch_time, 4),
+                "request_total_time": round(time.time() - request_start, 4),
+            },
+        )
+        if create_timings:
+            logger.info(
+                "controller create internals for %s: %s",
+                request.engine_uuid,
+                {k: round(v, 4) for k, v in create_timings.items()},
+            )
 
         logger.info(f"Engine {request.engine_uuid} created successfully on port {port}")
 
@@ -266,6 +301,7 @@ def create_engine(request: EngineCreateRequest):
             assigned_ranks=assigned_ranks,
             model=request.model,
             pid=proc.pid if proc else None,
+            create_timings=create_timings,
         )
 
     except Exception as e:
@@ -359,6 +395,7 @@ def get_engine_status(engine_uuid: str):
         if "vllm_config" in engine_info
         else None,
         pid=proc.pid if proc else None,
+        create_timings=engine_info.get("create_timings"),
     )
 
 
@@ -389,10 +426,30 @@ def get_engine_load_timings(engine_uuid: str):
         raise HTTPException(status_code=404, detail=f"Engine {engine_uuid} not found")
 
     engine_info = worker_controller.executor.engines[engine_uuid]
+    debug_info = {
+        "engine_uuid": engine_uuid,
+        "engine_info_keys": sorted(list(engine_info.keys())),
+    }
 
     # Get timings from the engine's AsyncLLM if available
     async_llm = engine_info.get("async_llm")
+    debug_info["has_async_llm"] = async_llm is not None
+    if async_llm is not None:
+        debug_info["async_llm_class"] = type(async_llm).__name__
     if async_llm and hasattr(async_llm, "engine_core"):
+        debug_info["has_engine_core"] = True
+        debug_info["engine_core_class"] = type(async_llm.engine_core).__name__
+        model_executor = getattr(async_llm.engine_core, "model_executor", None)
+        if model_executor is not None:
+            debug_info["model_executor_class"] = type(model_executor).__name__
+            has_timings_attr = hasattr(model_executor, "model_load_timings")
+            debug_info["model_executor_has_model_load_timings_attr"] = has_timings_attr
+            if has_timings_attr:
+                raw_timings = getattr(model_executor, "model_load_timings")
+                debug_info["model_executor_model_load_timings_type"] = type(raw_timings).__name__
+                if isinstance(raw_timings, list):
+                    debug_info["model_executor_model_load_timings_len"] = len(raw_timings)
+
         timings = async_llm.engine_core.get_model_load_timings()
         if timings:
             return {
@@ -410,12 +467,16 @@ def get_engine_load_timings(engine_uuid: str):
                     )
                     / len(timings),
                 },
+                "debug": debug_info,
             }
+    else:
+        debug_info["has_engine_core"] = False
 
     return {
         "engine_uuid": engine_uuid,
         "worker_timings": None,
         "message": "Timings not available",
+        "debug": debug_info,
     }
 
 
