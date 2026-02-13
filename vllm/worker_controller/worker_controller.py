@@ -4,6 +4,7 @@ import logging
 import multiprocessing
 import os
 import sys
+import time
 
 from vllm.worker_controller.config.vllm import VllmConfig, DummyVllmConfig
 from vllm.worker_controller.config.model import ModelConfig, DummyModelConfig
@@ -25,6 +26,12 @@ def run_api_server(request_queue, response_queue, engine_uuid, vllm_config, port
     """
     Entry point for the spawned API server process.
     """
+    if os.environ.get("VLLM_WC_QUIET_API_STDIO", "0") == "1":
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        os.close(devnull_fd)
+
     try:
         multiprocessing.set_start_method("forkserver", force=True)
         multiprocessing.set_forkserver_preload(
@@ -120,7 +127,7 @@ class WorkerController:
         model_config = DummyModelConfig("dummy", enforce_eager=True)
         cache_config = CacheConfig(gpu_memory_utilization=0.85)
         parallel_config = ParallelConfig(
-            pipeline_parallel_size=2,
+            pipeline_parallel_size=1,
             worker_cls="vllm.worker_controller.worker.gpu_worker.Worker",
         )
 
@@ -150,8 +157,11 @@ class WorkerController:
             engine_uuid: Unique identifier for this API server instance
         """
         logger.info(f"WorkerController.create called for {engine_uuid}")
+        create_start = time.time()
+        timing_breakdown: dict[str, float] = {}
 
         # 1. Allocate resources
+        step_start = time.time()
         num_gpus = vllm_config.parallel_config.world_size
         assigned_ranks, port = self.resource_allocator.assign(num_gpus, engine_uuid)
         # Allocate a port for distributed communication (e.g., tcp store)
@@ -161,23 +171,29 @@ class WorkerController:
             self.resource_allocator.next_port += 1
         else:
             dist_port = None
+        timing_breakdown["resource_allocation_time"] = time.time() - step_start
 
         logger.info(
             f"Assigned ranks {assigned_ranks}, port {port} to engine {engine_uuid}"
         )
 
         # 2. Create queues for communication
+        step_start = time.time()
         ctx = multiprocessing.get_context("forkserver")
         request_queue = ctx.Queue()
         response_queue = ctx.Queue()
+        timing_breakdown["ipc_queue_setup_time"] = time.time() - step_start
 
         # 3. Register engine with ProxyExecutor
+        step_start = time.time()
         logger.info(f"Adding engine {engine_uuid} to ProxyExecutor")
         self.executor.add_engine(
             engine_uuid, assigned_ranks, request_queue, response_queue, dist_port
         )
+        timing_breakdown["proxy_register_time"] = time.time() - step_start
 
         # 4. Spawn API Server process
+        step_start = time.time()
         logger.info(f"Spawning APIServer process for {engine_uuid}")
         proc = ctx.Process(
             target=run_api_server,
@@ -185,18 +201,21 @@ class WorkerController:
             name=f"APIServer-{engine_uuid}",
         )
         proc.start()
+        timing_breakdown["api_process_spawn_time"] = time.time() - step_start
+        timing_breakdown["create_call_total_time"] = time.time() - create_start
         logger.info(f"APIServer process started with PID {proc.pid}")
-
-        # Store process in executor engines dict (ProxyExecutor stores it too? No, ProxyExecutor stores queues/ranks)
-        # We might want to store proc somewhere to manage it (delete it later).
-        # ProxyExecutor engines dict has: ranks, queues.
-        # We can add proc to it or keep it separate.
-        # WorkerController.delete needs to terminate it.
-        # ProxyExecutor currently has delete_engine but it doesn't know about the process handle unless we pass it.
-        # But we can store it in ProxyExecutor.engines[uuid]['proc'] = proc
+        logger.info(
+            "WorkerController.create breakdown for %s: %s",
+            engine_uuid,
+            {
+                k: round(v, 4)
+                for k, v in timing_breakdown.items()
+            },
+        )
 
         if engine_uuid in self.executor.engines:
             self.executor.engines[engine_uuid]["proc"] = proc
+            self.executor.engines[engine_uuid]["create_timings"] = timing_breakdown
 
         return proc
 

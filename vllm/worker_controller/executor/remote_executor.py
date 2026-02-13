@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from concurrent.futures import Future, ThreadPoolExecutor
+import time
 from typing import Any, Callable, Dict, List, Tuple
 
 from vllm.config import VllmConfig
@@ -36,9 +37,13 @@ class RemoteExecutor(Executor):
     def _init_executor(self) -> None:
         # Trigger model loading on the assigned workers
         # Use None timeout as loading can take time
+        load_start = time.time()
         load_result = self.collective_rpc(
             "load_model", args=(self.vllm_config,), timeout=None
         )
+        load_elapsed = time.time() - load_start
+        self.load_model_rpc_time_seconds = load_elapsed
+
         # Store timing information from workers
         if isinstance(load_result, list):
             self.model_load_timings = load_result
@@ -46,6 +51,16 @@ class RemoteExecutor(Executor):
             self.model_load_timings = [load_result]
         else:
             self.model_load_timings = None
+
+        if self.model_load_timings:
+            for timing in self.model_load_timings:
+                if isinstance(timing, dict):
+                    timing["remote_executor_load_model_rpc_time"] = load_elapsed
+
+        logger.warning(
+            "RemoteExecutor load_model RPC completed in %.3fs",
+            load_elapsed,
+        )
         self.output_rank = self._get_output_rank()
 
     def _get_output_rank(self) -> int:

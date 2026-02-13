@@ -143,9 +143,12 @@ class MultiprocExecutor(Executor):
             )
             scheduler_output_handle = self.rpc_broadcast_mq.export_handle()
         # Create workers
+        startup_start = time.time()
         context = get_mp_context()
         shared_worker_lock = context.Lock()
         unready_workers: list[UnreadyWorkerProcHandle] = []
+        worker_ready_time = 0.0
+        mq_ready_time = 0.0
         success = False
         try:
             global_start_rank = (
@@ -168,7 +171,9 @@ class MultiprocExecutor(Executor):
             # deadlock, since worker.init_device() does a device sync.
 
             # Wait for all local workers to be ready.
+            worker_ready_start = time.time()
             self.workers = WorkerProc.wait_for_ready(unready_workers)
+            worker_ready_time = time.time() - worker_ready_start
 
             # Start background thread to monitor worker health if not in headless mode.
             if self.monitor_workers:
@@ -193,11 +198,19 @@ class MultiprocExecutor(Executor):
             # Must be kept consistent with the WorkerProc.
 
             # Wait for all input mqs to be ready.
+            mq_ready_start = time.time()
             if self.rpc_broadcast_mq is not None:
                 self.rpc_broadcast_mq.wait_until_ready()
             # Wait for all remote response mqs to be ready.
             for response_mq in self.response_mqs:
                 response_mq.wait_until_ready()
+            mq_ready_time = time.time() - mq_ready_start
+            logger.info(
+                "MultiprocExecutor startup breakdown: worker_ready=%.2fs, mq_ready=%.2fs, total=%.2fs",
+                worker_ready_time,
+                mq_ready_time,
+                time.time() - startup_start,
+            )
             success = True
         finally:
             if not success:

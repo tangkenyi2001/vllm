@@ -1,16 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+from time import time
 from vllm import LLM, SamplingParams
 
 prompts = [
-    "Hello, my name is",
-    "The president of the United States is",
-    "The capital of France is",
-    "The future of AI is",
+    "Hello, my name is"
 ]
 sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
-llm = LLM(model="Qwen/Qwen3-1.7B", enforce_eager=True, gpu_memory_utilization=0.5)
+start=time()
+llm = LLM(model="facebook/opt-125m", enforce_eager=True, gpu_memory_utilization=0.5)
+print(f"LLM init time: {time()-start:.2f} seconds")
 outputs = llm.generate(prompts, sampling_params)
+
 
 for output in outputs:
     prompt = output.prompt

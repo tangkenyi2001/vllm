@@ -821,6 +821,12 @@ class WorkerProc:
         """Worker initialization and execution loops.
         This runs a background process"""
 
+        if os.environ.get("VLLM_WC_QUIET_WORKER_STDIO", "0") == "1":
+            devnull_fd = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull_fd, 1)
+            os.dup2(devnull_fd, 2)
+            os.close(devnull_fd)
+
         # Signal handler used for graceful termination.
         # SystemExit exception is only raised once to allow this and worker
         # processes to terminate without error

@@ -311,6 +311,7 @@ class EngineCore:
         self.model_executor.initialize_from_config(kv_cache_configs)
 
         elapsed = time.time() - start
+        self._init_engine_time_seconds = elapsed
         logger.info_once(
             "init engine (profile, create kv cache, warmup model) took %.2f seconds",
             elapsed,
@@ -336,6 +337,10 @@ class EngineCore:
         if hasattr(self.model_executor, "model_load_timings"):
             return self.model_executor.model_load_timings
         return None
+
+    def get_init_engine_time_seconds(self) -> float | None:
+        """Get elapsed time for engine init (profile + KV cache + warmup)."""
+        return getattr(self, "_init_engine_time_seconds", None)
 
     def add_request(self, request: Request, request_wave: int = 0):
         """Add request to the scheduler.
