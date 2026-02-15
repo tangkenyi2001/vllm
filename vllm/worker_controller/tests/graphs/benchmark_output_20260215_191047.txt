@@ -1,0 +1,579 @@
+[log] writing benchmark output to: /root/code/benchmark_output_20260215_191047.txt
+
+================================================================================
+0: Model File Prewarm
+================================================================================
+
+[PREWARM] Starting: facebook/opt-125m
+Fetching 6 files:   0%|          | 0/6 [00:00<?, ?it/s]Fetching 6 files: 100%|██████████| 6/6 [00:00<00:00, 131758.24it/s]
+[PREWARM] Done: facebook/opt-125m | files=1 bytes=0.23 GiB time=0.33s
+[PREWARM] Starting: facebook/opt-125m
+Fetching 6 files:   0%|          | 0/6 [00:00<?, ?it/s]Fetching 6 files: 100%|██████████| 6/6 [00:00<00:00, 171196.08it/s]
+[PREWARM] Done: facebook/opt-125m | files=1 bytes=0.23 GiB time=0.25s
+[PREWARM] Starting: facebook/opt-125m
+Fetching 6 files:   0%|          | 0/6 [00:00<?, ?it/s]Fetching 6 files: 100%|██████████| 6/6 [00:00<00:00, 199728.76it/s]
+[PREWARM] Done: facebook/opt-125m | files=1 bytes=0.23 GiB time=0.23s
+
+================================================================================
+1: Worker Controller
+================================================================================
+
+[WC][BOOT] Starting Worker Controller
+[WC][BOOT] Initialized controller with 1 workers
+[WC][BOOT] API server started on port 21000
+[WC][HEALTH] Waiting for controller health endpoint
+[WC][HEALTH] Controller ready: {'status': 'healthy', 'num_workers': 1, 'num_engines': 0}
+
+[Worker Controller] run 1/1 for facebook/opt-125m (run-1)
+
+============================================================
+Worker Controller Cold Start: facebook/opt-125m
+============================================================
+[WC][CREATE] Creating engine opt-125m-a-run1
+[WC][CREATE] payload={'engine_uuid': 'opt-125m-a-run1', 'model': 'facebook/opt-125m', 'gpu_memory_utilization': 0.3, 'enforce_eager': True}
+[WC][CREATE] done in 1.42s | status=created pid=32273 port=8001 ranks=[0]
+[WC][CREATE] internal timings: resource_allocation=0.000s, ipc_queue_setup=0.001s, proxy_register=0.000s, api_process_spawn=0.026s, create_call_total=0.027s
+[WC][ATTACH] attach to pre-warmed workers took 0.001021s
+[WC][READY] Waiting for engine API health at http://localhost:8001
+  [WC][READY][01] status=running pid=32273 port=8001 ranks=[0]
+  [WC][READY][01] create_timings: resource_allocation=0.000s, ipc_queue_setup=0.001s, proxy_register=0.000s, api_process_spawn=0.026s, create_call_total=0.027s
+  [WC][READY][10] status=running pid=32273 port=8001 ranks=[0]
+[1;36m(Worker pid=32211)[0;0m Loading pt checkpoint shards:   0% Completed | 0/1 [00:00<?, ?it/s]
+[1;36m(Worker pid=32211)[0;0m Loading pt checkpoint shards: 100% Completed | 1/1 [00:00<00:00,  3.23it/s]
+[1;36m(Worker pid=32211)[0;0m Loading pt checkpoint shards: 100% Completed | 1/1 [00:00<00:00,  3.23it/s]
+[1;36m(Worker pid=32211)[0;0m 
+  [WC][READY][20] status=running pid=32273 port=8001 ranks=[0]
+[WC][READY] API server healthy in 11.33s
+[WC][READY] startup_timing={'api_routes_ready_time': 1771153862.9428525, 'first_health_ok_time': 1771153863.0680249, 'api_routes_to_first_health_s': 0.12517237663269043}
+[WC][INFER] Running first inference
+[WC][INFER] first token response in 0.15s
+[WC][INFER] generated=' J.C. and I am a student at'
+[WC][LOAD] querying timing endpoint: http://localhost:8001/model_load_timings
+[WC][LOAD] engine endpoint response | has_worker_timings=True has_summary=True
+[WC][KV] init engine (profile, create kv cache, warmup model) took 1.25 seconds
+[WC][LOAD] remote executor load_model RPC took 2.23s
+[WC][LOAD] first worker timings | config=0.000s dist=0.032s runner=0.016s weight=2.022s total=2.228s
+[WC][WARM-WORKERS] model load time across warmed workers | avg=2.037s per_worker=[2.037]
+  Worker Controller startup timing breakdown:
+    total_api_ready_s (create + health): 12.755s
+    create_time: 1.421s
+    api_ready_time: 11.333s
+    init_engine_time: 1.248s
+    remaining_startup_overhead_s (api_ready - engine_internal_subset): 11.506s
+  Worker Controller startup overhead decomposition:
+    engine_create_phase_s: 1.421s
+      resource_allocation_time (included above): 0.000s
+      ipc_queue_setup_time (included above): 0.001s
+      proxy_register_time (included above): 0.000s
+      api_process_spawn_time (included above): 0.026s
+    engine_creation_internal_s: 1.248s
+      model_loading_phase_s (included above): 2.037s
+      kv_cache_phase_after_model_load_s (included above): 0.000s
+      remote_executor_load_model_rpc_time (included above): 2.232s
+    post_engine_api_readiness_s: 11.333s
+      post_engine_to_api_routes_ready_s (included above): 11.208s
+      api_routes_to_health_ready_s (included above): 0.125s
+  Worker Controller startup phase accounting (non-overlapping):
+    phase_1_create_call_s: 1.421s
+    phase_2_wait_for_engine_health_s: 11.333s
+    phase_accounted_total_api_ready_s: 12.755s
+    phase_residual_unobserved_s: 0.000s
+    note: model_loading_phase_s and init_engine_time come from different instrumentation scopes and are not additive
+Worker Controller flow stage timing:
+  controller_create_http_roundtrip_s: 1.421
+  controller_attach_to_workers_s: 0.001
+  controller_spawn_api_process_s: 0.026
+  engine_health_wait_after_create_s: 11.333
+  engine_api_routes_to_health_ready_s: 0.125
+  engine_init_profile_kv_cache_warmup_s: 1.248
+  engine_remote_load_model_rpc_s: 2.232
+  spawn_to_health_ready_probe_s: 12.755
+  first_inference_s: 0.148
+[WC][CLEANUP] Deleting engine opt-125m-a-run1
+
+[Worker Controller] run 1/1 for facebook/opt-125m (run-2)
+
+============================================================
+Worker Controller Cold Start: facebook/opt-125m
+============================================================
+[WC][CREATE] Creating engine opt-125m-b-run1
+[WC][CREATE] payload={'engine_uuid': 'opt-125m-b-run1', 'model': 'facebook/opt-125m', 'gpu_memory_utilization': 0.3, 'enforce_eager': True}
+[WC][CREATE] done in 0.82s | status=created pid=32454 port=8002 ranks=[0]
+[WC][CREATE] internal timings: resource_allocation=0.000s, ipc_queue_setup=0.001s, proxy_register=0.000s, api_process_spawn=0.001s, create_call_total=0.002s
+[WC][ATTACH] attach to pre-warmed workers took 0.001004s
+[WC][READY] Waiting for engine API health at http://localhost:8002
+  [WC][READY][01] status=running pid=32454 port=8002 ranks=[0]
+  [WC][READY][01] create_timings: resource_allocation=0.000s, ipc_queue_setup=0.001s, proxy_register=0.000s, api_process_spawn=0.001s, create_call_total=0.002s
+  [WC][READY][10] status=running pid=32454 port=8002 ranks=[0]
+[1;36m(Worker pid=32211)[0;0m Loading pt checkpoint shards:   0% Completed | 0/1 [00:00<?, ?it/s]
+[1;36m(Worker pid=32211)[0;0m Loading pt checkpoint shards: 100% Completed | 1/1 [00:00<00:00,  3.10it/s]
+[1;36m(Worker pid=32211)[0;0m Loading pt checkpoint shards: 100% Completed | 1/1 [00:00<00:00,  3.10it/s]
+[1;36m(Worker pid=32211)[0;0m 
+  [WC][READY][20] status=running pid=32454 port=8002 ranks=[0]
+[WC][READY] API server healthy in 14.47s
+[WC][READY] startup_timing={'api_routes_ready_time': 1771153882.5552626, 'first_health_ok_time': 1771153882.860576, 'api_routes_to_first_health_s': 0.3053133487701416}
+[WC][INFER] Running first inference
+[WC][INFER] first token response in 0.06s
+[WC][INFER] generated=' J.C. and I am a student at'
+[WC][LOAD] querying timing endpoint: http://localhost:8002/model_load_timings
+[WC][LOAD] engine endpoint response | has_worker_timings=True has_summary=True
+[WC][KV] init engine (profile, create kv cache, warmup model) took 0.90 seconds
+[WC][LOAD] remote executor load_model RPC took 1.28s
+[WC][LOAD] first worker timings | config=0.000s dist=0.000s runner=0.006s weight=1.272s total=1.278s
+[WC][WARM-WORKERS] model load time across warmed workers | avg=1.277s per_worker=[1.277]
+  Worker Controller startup timing breakdown:
+    total_api_ready_s (create + health): 15.285s
+    create_time: 0.818s
+    api_ready_time: 14.467s
+    init_engine_time: 0.902s
+    remaining_startup_overhead_s (api_ready - engine_internal_subset): 14.382s
+  Worker Controller startup overhead decomposition:
+    engine_create_phase_s: 0.818s
+      resource_allocation_time (included above): 0.000s
+      ipc_queue_setup_time (included above): 0.001s
+      proxy_register_time (included above): 0.000s
+      api_process_spawn_time (included above): 0.001s
+    engine_creation_internal_s: 0.902s
+      model_loading_phase_s (included above): 1.277s
+      kv_cache_phase_after_model_load_s (included above): 0.000s
+      remote_executor_load_model_rpc_time (included above): 1.280s
+    post_engine_api_readiness_s: 14.467s
+      post_engine_to_api_routes_ready_s (included above): 14.161s
+      api_routes_to_health_ready_s (included above): 0.305s
+  Worker Controller startup phase accounting (non-overlapping):
+    phase_1_create_call_s: 0.818s
+    phase_2_wait_for_engine_health_s: 14.467s
+    phase_accounted_total_api_ready_s: 15.285s
+    phase_residual_unobserved_s: 0.000s
+    note: model_loading_phase_s and init_engine_time come from different instrumentation scopes and are not additive
+Worker Controller flow stage timing:
+  controller_create_http_roundtrip_s: 0.818
+  controller_attach_to_workers_s: 0.001
+  controller_spawn_api_process_s: 0.001
+  engine_health_wait_after_create_s: 14.467
+  engine_api_routes_to_health_ready_s: 0.305
+  engine_init_profile_kv_cache_warmup_s: 0.902
+  engine_remote_load_model_rpc_s: 1.280
+  spawn_to_health_ready_probe_s: 15.285
+  first_inference_s: 0.057
+[WC][CLEANUP] Deleting engine opt-125m-b-run1
+
+[Worker Controller] run 1/1 for facebook/opt-125m (run-3)
+
+============================================================
+Worker Controller Cold Start: facebook/opt-125m
+============================================================
+[WC][CREATE] Creating engine opt-125m-c-run1
+[WC][CREATE] payload={'engine_uuid': 'opt-125m-c-run1', 'model': 'facebook/opt-125m', 'gpu_memory_utilization': 0.3, 'enforce_eager': True}
+[WC][CREATE] done in 0.67s | status=created pid=32597 port=8003 ranks=[0]
+[WC][CREATE] internal timings: resource_allocation=0.000s, ipc_queue_setup=0.001s, proxy_register=0.000s, api_process_spawn=0.002s, create_call_total=0.002s
+[WC][ATTACH] attach to pre-warmed workers took 0.000699s
+[WC][READY] Waiting for engine API health at http://localhost:8003
+  [WC][READY][01] status=running pid=32597 port=8003 ranks=[0]
+  [WC][READY][01] create_timings: resource_allocation=0.000s, ipc_queue_setup=0.001s, proxy_register=0.000s, api_process_spawn=0.002s, create_call_total=0.002s
+  [WC][READY][10] status=running pid=32597 port=8003 ranks=[0]
+[1;36m(Worker pid=32211)[0;0m Loading pt checkpoint shards:   0% Completed | 0/1 [00:00<?, ?it/s]
+[1;36m(Worker pid=32211)[0;0m Loading pt checkpoint shards: 100% Completed | 1/1 [00:00<00:00, 10.55it/s]
+[1;36m(Worker pid=32211)[0;0m 
+[WC][READY] API server healthy in 9.22s
+[WC][READY] startup_timing={'api_routes_ready_time': 1771153896.6767392, 'first_health_ok_time': 1771153897.1524515, 'api_routes_to_first_health_s': 0.47571229934692383}
+[WC][INFER] Running first inference
+[WC][INFER] first token response in 0.10s
+[WC][INFER] generated=' J.C. and I am a student at'
+[WC][LOAD] querying timing endpoint: http://localhost:8003/model_load_timings
+[WC][LOAD] engine endpoint response | has_worker_timings=True has_summary=True
+[WC][KV] init engine (profile, create kv cache, warmup model) took 0.74 seconds
+[WC][LOAD] remote executor load_model RPC took 1.03s
+[WC][LOAD] first worker timings | config=0.000s dist=0.000s runner=0.005s weight=1.023s total=1.028s
+[WC][WARM-WORKERS] model load time across warmed workers | avg=1.028s per_worker=[1.028]
+  Worker Controller startup timing breakdown:
+    total_api_ready_s (create + health): 9.891s
+    create_time: 0.669s
+    api_ready_time: 9.222s
+    init_engine_time: 0.738s
+    remaining_startup_overhead_s (api_ready - engine_internal_subset): 9.153s
+  Worker Controller startup overhead decomposition:
+    engine_create_phase_s: 0.669s
+      resource_allocation_time (included above): 0.000s
+      ipc_queue_setup_time (included above): 0.001s
+      proxy_register_time (included above): 0.000s
+      api_process_spawn_time (included above): 0.002s
+    engine_creation_internal_s: 0.738s
+      model_loading_phase_s (included above): 1.028s
+      kv_cache_phase_after_model_load_s (included above): 0.000s
+      remote_executor_load_model_rpc_time (included above): 1.030s
+    post_engine_api_readiness_s: 9.222s
+      post_engine_to_api_routes_ready_s (included above): 8.747s
+      api_routes_to_health_ready_s (included above): 0.476s
+  Worker Controller startup phase accounting (non-overlapping):
+    phase_1_create_call_s: 0.669s
+    phase_2_wait_for_engine_health_s: 9.222s
+    phase_accounted_total_api_ready_s: 9.891s
+    phase_residual_unobserved_s: 0.000s
+    note: model_loading_phase_s and init_engine_time come from different instrumentation scopes and are not additive
+Worker Controller flow stage timing:
+  controller_create_http_roundtrip_s: 0.669
+  controller_attach_to_workers_s: 0.001
+  controller_spawn_api_process_s: 0.002
+  engine_health_wait_after_create_s: 9.222
+  engine_api_routes_to_health_ready_s: 0.476
+  engine_init_profile_kv_cache_warmup_s: 0.738
+  engine_remote_load_model_rpc_s: 1.030
+  spawn_to_health_ready_probe_s: 9.891
+  first_inference_s: 0.099
+[WC][CLEANUP] Deleting engine opt-125m-c-run1
+[WC][STOP] Stopping Worker Controller
+[WC][STOP] Worker Controller stopped
+
+================================================================================
+2: Standard vLLM
+================================================================================
+
+
+[Standard vLLM] run 1/1 for facebook/opt-125m (run-1) (port 8000)
+
+============================================================
+Standard vLLM API Server Cold Start: facebook/opt-125m
+============================================================
+Starting vLLM API server on port 8000...
+  API process spawn call time: 0.001s
+Waiting for API server to be ready...
+  [std-log] [1;36m(APIServer pid=32762)[0;0m [1;36m(EngineCore_DP0 pid=32812)[0;0m INFO 02-15 19:11:57 [default_loader.py:314] Loading weights took 0.22 seconds
+  [std-log] [1;36m(APIServer pid=32762)[0;0m [1;36m(EngineCore_DP0 pid=32812)[0;0m INFO 02-15 19:11:58 [core.py:294] init engine (profile, create kv cache, warmup model) took 1.11 seconds
+  Server ready: 16.12s
+Startup timing breakdown:
+  total_api_ready_s: 16.120
+  model_weight_load_s: 0.220
+  model_load_total_s: 1.551
+  memory_profile_s: 1.100
+  engine_init_profile_kv_cache_warmup_s: 1.110
+  kv_cache_plus_warmup_estimated_s: 0.010
+  remaining_startup_overhead_s: 13.458
+Startup overhead decomposition:
+  api_process_bootstrap_to_first_api_log_s: 0.001
+  api_bootstrap_until_engine_init_visible_s: 2.599
+    worker_process_startup_estimated_s (included above): 0.521
+    engine_pre_model_overhead_estimated_s (included above): 0.336
+  engine_creation_phase_s: 3.996
+    model_loading_phase_s (included above): 2.032
+    kv_cache_phase_after_model_load_s (included above): 1.000
+  post_engine_api_readiness_s: 2.318
+    post_engine_to_api_routes_ready_s (included above): 2.070
+    api_routes_to_health_ready_s (included above): 0.248
+Startup milestones (relative timings):
+  first_log_after_spawn_s: 0.000
+  api_process_started_log_after_spawn_s: 0.001
+  engine_process_init_log_after_spawn_s: 2.600
+  distributed_init_log_after_spawn_s: 3.121
+  model_load_start_log_after_spawn_s: 3.457
+  weights_loaded_log_after_spawn_s: 5.171
+  model_loaded_log_after_spawn_s: 5.489
+  kv_cache_init_done_log_after_spawn_s: 6.596
+  api_routes_ready_log_after_spawn_s: 8.665
+  uvicorn_started_log_after_spawn_s: 8.679
+  app_startup_complete_log_after_spawn_s: 8.847
+  health_ok_log_after_spawn_s: 8.914
+  ready_after_spawn_s: 16.120
+Startup milestones (log timestamp segments):
+  api_process_started_log__to__engine_process_init_log_s: 2.000
+  engine_process_init_log__to__distributed_init_log_s: 1.000
+  distributed_init_log__to__model_load_start_log_s: 0.000
+  model_load_start_log__to__weights_loaded_log_s: 2.000
+  weights_loaded_log__to__model_loaded_log_s: 0.000
+  model_loaded_log__to__kv_cache_init_done_log_s: 1.000
+  kv_cache_init_done_log__to__api_routes_ready_log_s: 2.000
+Standard vLLM flow stage timing:
+  spawn_call_time_s: 0.001
+  spawn_to_first_log_s: 0.001
+  api_bootstrap_to_engine_init_s: 2.599
+  engine_init_to_distributed_init_s: 0.521
+  distributed_init_to_model_load_start_s: 0.336
+  model_load_phase_s: 2.032
+  post_model_to_kv_ready_s: 1.107
+  post_kv_to_api_routes_ready_s: 2.070
+  api_routes_to_health_ready_s: 0.248
+  spawn_to_health_ready_probe_s: 16.120
+Standard vLLM event offsets:
+  first_log_after_first_log_s: 0.000
+  api_process_started_after_first_log_s: 0.001
+  engine_init_after_first_log_s: 2.600
+  distributed_init_after_first_log_s: 3.121
+  model_load_start_after_first_log_s: 3.457
+  model_loaded_after_first_log_s: 5.489
+  kv_ready_after_first_log_s: 6.596
+  api_routes_ready_after_first_log_s: 8.665
+  health_ok_after_first_log_s: 8.914
+Running first inference...
+  First inference: 0.11s
+  Generated: ' J.C. and I am a student at'
+Cleaning up server...
+
+[Standard vLLM] run 1/1 for facebook/opt-125m (run-2) (port 8010)
+
+============================================================
+Standard vLLM API Server Cold Start: facebook/opt-125m
+============================================================
+Starting vLLM API server on port 8010...
+  API process spawn call time: 0.001s
+Waiting for API server to be ready...
+  [std-log] [1;36m(APIServer pid=32977)[0;0m [1;36m(EngineCore_DP0 pid=33034)[0;0m INFO 02-15 19:12:16 [default_loader.py:314] Loading weights took 0.23 seconds
+  [std-log] [1;36m(APIServer pid=32977)[0;0m [1;36m(EngineCore_DP0 pid=33034)[0;0m INFO 02-15 19:12:17 [core.py:294] init engine (profile, create kv cache, warmup model) took 1.26 seconds
+  Server ready: 14.03s
+Startup timing breakdown:
+  total_api_ready_s: 14.028
+  model_weight_load_s: 0.230
+  model_load_total_s: 1.479
+  memory_profile_s: 1.200
+  engine_init_profile_kv_cache_warmup_s: 1.260
+  kv_cache_plus_warmup_estimated_s: 0.060
+  remaining_startup_overhead_s: 11.288
+Startup overhead decomposition:
+  api_process_bootstrap_to_first_api_log_s: 0.003
+  api_bootstrap_until_engine_init_visible_s: 2.846
+    worker_process_startup_estimated_s (included above): 0.550
+    engine_pre_model_overhead_estimated_s (included above): 0.415
+  engine_creation_phase_s: 4.173
+    model_loading_phase_s (included above): 1.943
+    kv_cache_phase_after_model_load_s (included above): 1.000
+  post_engine_api_readiness_s: 2.992
+    post_engine_to_api_routes_ready_s (included above): 2.139
+    api_routes_to_health_ready_s (included above): 0.854
+Startup milestones (relative timings):
+  first_log_after_spawn_s: 0.000
+  api_process_started_log_after_spawn_s: 0.003
+  engine_process_init_log_after_spawn_s: 2.849
+  distributed_init_log_after_spawn_s: 3.399
+  model_load_start_log_after_spawn_s: 3.814
+  weights_loaded_log_after_spawn_s: 5.446
+  model_loaded_log_after_spawn_s: 5.757
+  kv_cache_init_done_log_after_spawn_s: 7.021
+  api_routes_ready_log_after_spawn_s: 9.160
+  uvicorn_started_log_after_spawn_s: 9.184
+  app_startup_complete_log_after_spawn_s: 9.541
+  health_ok_log_after_spawn_s: 10.014
+  ready_after_spawn_s: 14.028
+Startup milestones (log timestamp segments):
+  api_process_started_log__to__engine_process_init_log_s: 3.000
+  engine_process_init_log__to__distributed_init_log_s: 1.000
+  distributed_init_log__to__model_load_start_log_s: 0.000
+  model_load_start_log__to__weights_loaded_log_s: 2.000
+  weights_loaded_log__to__model_loaded_log_s: 0.000
+  model_loaded_log__to__kv_cache_init_done_log_s: 1.000
+  kv_cache_init_done_log__to__api_routes_ready_log_s: 3.000
+Standard vLLM flow stage timing:
+  spawn_call_time_s: 0.001
+  spawn_to_first_log_s: 0.003
+  api_bootstrap_to_engine_init_s: 2.846
+  engine_init_to_distributed_init_s: 0.550
+  distributed_init_to_model_load_start_s: 0.415
+  model_load_phase_s: 1.943
+  post_model_to_kv_ready_s: 1.265
+  post_kv_to_api_routes_ready_s: 2.139
+  api_routes_to_health_ready_s: 0.854
+  spawn_to_health_ready_probe_s: 14.028
+Standard vLLM event offsets:
+  first_log_after_first_log_s: 0.000
+  api_process_started_after_first_log_s: 0.003
+  engine_init_after_first_log_s: 2.849
+  distributed_init_after_first_log_s: 3.399
+  model_load_start_after_first_log_s: 3.814
+  model_loaded_after_first_log_s: 5.757
+  kv_ready_after_first_log_s: 7.021
+  api_routes_ready_after_first_log_s: 9.160
+  health_ok_after_first_log_s: 10.014
+Running first inference...
+  First inference: 0.15s
+  Generated: ' J.C. and I am a student at'
+Cleaning up server...
+
+[Standard vLLM] run 1/1 for facebook/opt-125m (run-3) (port 8020)
+
+============================================================
+Standard vLLM API Server Cold Start: facebook/opt-125m
+============================================================
+Starting vLLM API server on port 8020...
+  API process spawn call time: 0.001s
+Waiting for API server to be ready...
+  [std-log] [1;36m(APIServer pid=33199)[0;0m [1;36m(EngineCore_DP0 pid=33262)[0;0m INFO 02-15 19:12:39 [default_loader.py:314] Loading weights took 0.24 seconds
+  [std-log] [1;36m(APIServer pid=33199)[0;0m [1;36m(EngineCore_DP0 pid=33262)[0;0m INFO 02-15 19:12:40 [core.py:294] init engine (profile, create kv cache, warmup model) took 1.03 seconds
+  Server ready: 13.02s
+Startup timing breakdown:
+  total_api_ready_s: 13.022
+  model_weight_load_s: 0.240
+  model_load_total_s: 1.452
+  memory_profile_s: 1.000
+  engine_init_profile_kv_cache_warmup_s: 1.030
+  kv_cache_plus_warmup_estimated_s: 0.030
+  remaining_startup_overhead_s: 10.540
+Startup overhead decomposition:
+  api_process_bootstrap_to_first_api_log_s: 0.002
+  api_bootstrap_until_engine_init_visible_s: 3.072
+    worker_process_startup_estimated_s (included above): 0.505
+    engine_pre_model_overhead_estimated_s (included above): 0.400
+  engine_creation_phase_s: 3.861
+    model_loading_phase_s (included above): 1.923
+    kv_cache_phase_after_model_load_s (included above): 1.000
+  post_engine_api_readiness_s: 2.350
+    post_engine_to_api_routes_ready_s (included above): 2.049
+    api_routes_to_health_ready_s (included above): 0.302
+Startup milestones (relative timings):
+  first_log_after_spawn_s: 0.000
+  api_process_started_log_after_spawn_s: 0.002
+  engine_process_init_log_after_spawn_s: 3.074
+  distributed_init_log_after_spawn_s: 3.579
+  model_load_start_log_after_spawn_s: 3.979
+  weights_loaded_log_after_spawn_s: 5.587
+  model_loaded_log_after_spawn_s: 5.902
+  kv_cache_init_done_log_after_spawn_s: 6.935
+  api_routes_ready_log_after_spawn_s: 8.984
+  uvicorn_started_log_after_spawn_s: 8.996
+  app_startup_complete_log_after_spawn_s: 9.167
+  health_ok_log_after_spawn_s: 9.285
+  ready_after_spawn_s: 13.022
+Startup milestones (log timestamp segments):
+  api_process_started_log__to__engine_process_init_log_s: 4.000
+  engine_process_init_log__to__distributed_init_log_s: 0.000
+  distributed_init_log__to__model_load_start_log_s: 0.000
+  model_load_start_log__to__weights_loaded_log_s: 2.000
+  weights_loaded_log__to__model_loaded_log_s: 0.000
+  model_loaded_log__to__kv_cache_init_done_log_s: 1.000
+  kv_cache_init_done_log__to__api_routes_ready_log_s: 2.000
+Standard vLLM flow stage timing:
+  spawn_call_time_s: 0.001
+  spawn_to_first_log_s: 0.002
+  api_bootstrap_to_engine_init_s: 3.072
+  engine_init_to_distributed_init_s: 0.505
+  distributed_init_to_model_load_start_s: 0.400
+  model_load_phase_s: 1.923
+  post_model_to_kv_ready_s: 1.033
+  post_kv_to_api_routes_ready_s: 2.049
+  api_routes_to_health_ready_s: 0.302
+  spawn_to_health_ready_probe_s: 13.022
+Standard vLLM event offsets:
+  first_log_after_first_log_s: 0.000
+  api_process_started_after_first_log_s: 0.002
+  engine_init_after_first_log_s: 3.074
+  distributed_init_after_first_log_s: 3.579
+  model_load_start_after_first_log_s: 3.979
+  model_loaded_after_first_log_s: 5.902
+  kv_ready_after_first_log_s: 6.935
+  api_routes_ready_after_first_log_s: 8.984
+  health_ok_after_first_log_s: 9.285
+Running first inference...
+  First inference: 0.14s
+  Generated: ' J.C. and I am a student at'
+Cleaning up server...
+
+================================================================================
+RESULTS
+================================================================================
+Averaged over 1 runs per model
+
+Model                        Std vLLM (s) Worker Ctrl (s)     Diff (s)    Speedup     Runs
+--------------------------------------------------------------------------------
+facebook/opt-125m (run-1)           16.24           12.91         3.33       1.3x      1/1
+facebook/opt-125m (run-2)           14.18           15.35        -1.17       0.9x      1/1
+facebook/opt-125m (run-3)           13.16           10.00         3.17       1.3x      1/1
+
+================================================================================
+CUMULATIVE TIME FOR ALL 3 MODELS x 1 RUNS:
+================================================================================
+
+  Standard vLLM (fresh process each time):  43.58s
+  Worker Controller (reuses CUDA context):  38.25s
+  Time saved:                               5.33s
+  Speedup:                                  1.14x
+
+--------------------------------------------------------------------------------
+
+Detailed Breakdown:
+
+facebook/opt-125m (run-1):
+  Standard vLLM (spawns new workers each time):
+    Server ready:    16.12s  (includes CUDA init + process spawn + model load)
+    First inference: 0.11s
+    Total:           16.24s
+  Worker Controller (reuses pre-warmed workers):
+    Server ready:    12.75s  (reuses CUDA context, only loads model)
+    First inference: 0.15s
+    Total:           12.91s
+    load_model total(avg): 2.23s
+    load_model weight(avg): 2.02s
+
+facebook/opt-125m (run-2):
+  Standard vLLM (spawns new workers each time):
+    Server ready:    14.03s  (includes CUDA init + process spawn + model load)
+    First inference: 0.15s
+    Total:           14.18s
+  Worker Controller (reuses pre-warmed workers):
+    Server ready:    15.28s  (reuses CUDA context, only loads model)
+    First inference: 0.06s
+    Total:           15.35s
+    load_model total(avg): 1.28s
+    load_model weight(avg): 1.27s
+
+facebook/opt-125m (run-3):
+  Standard vLLM (spawns new workers each time):
+    Server ready:    13.02s  (includes CUDA init + process spawn + model load)
+    First inference: 0.14s
+    Total:           13.16s
+  Worker Controller (reuses pre-warmed workers):
+    Server ready:    9.89s  (reuses CUDA context, only loads model)
+    First inference: 0.10s
+    Total:           10.00s
+    load_model total(avg): 1.03s
+    load_model weight(avg): 1.02s
+
+================================================================================
+ALIGNED STARTUP COMPARISON (shared metric names, seconds)
+================================================================================
+
+facebook/opt-125m (run-1):
+  COMPARABLE METRICS
+  Metric                             Standard WorkerCtrl   Δ(Std-WC)
+  --------------------------------------------------------------------
+  Startup ready                        16.120     12.755      +3.365
+  Remaining startup overhead           13.458     11.506      +1.952
+  API bootstrap -> engine visible       2.000      1.421      +0.579
+  Worker process startup (est.)         0.521   0.001021      +0.520
+  Engine pre-model overhead (est.)   0.000000   0.001004      -0.001
+  Engine creation phase                 2.551      1.248      +1.303
+  First inference                       0.114      0.148      -0.034
+  Total cold start                     16.237     12.908      +3.328
+
+facebook/opt-125m (run-2):
+  COMPARABLE METRICS
+  Metric                             Standard WorkerCtrl   Δ(Std-WC)
+  --------------------------------------------------------------------
+  Startup ready                        14.028     15.285      -1.257
+  Remaining startup overhead           11.288     14.382      -3.094
+  API bootstrap -> engine visible       3.000      0.818      +2.182
+  Worker process startup (est.)         0.550   0.001004      +0.549
+  Engine pre-model overhead (est.)   0.000000   0.000991      -0.001
+  Engine creation phase                 2.479      0.902      +1.577
+  First inference                       0.150      0.057      +0.092
+  Total cold start                     14.181     15.347      -1.166
+
+facebook/opt-125m (run-3):
+  COMPARABLE METRICS
+  Metric                             Standard WorkerCtrl   Δ(Std-WC)
+  --------------------------------------------------------------------
+  Startup ready                        13.022      9.891      +3.131
+  Remaining startup overhead           10.540      9.153      +1.387
+  API bootstrap -> engine visible       4.000      0.669      +3.331
+  Worker process startup (est.)         0.505   0.000699      +0.504
+  Engine pre-model overhead (est.)   0.000000   0.000691      -0.001
+  Engine creation phase                 2.452      0.738      +1.714
+  First inference                       0.138      0.099      +0.039
+  Total cold start                     13.163      9.995      +3.168
+[chart] saved side-by-side startup flow chart: /root/code/startup_savings_20260215_191248.png
+
+================================================================================
+VISUAL COMPARISON - Total Sequential Load Time
+================================================================================
+
+Standard vLLM:      ################################################## 43.6s
+Worker Controller:  ###########################################------- 38.3s
+
+  Time saved: 5.3s
+  Speedup: 1.14x (12% faster)

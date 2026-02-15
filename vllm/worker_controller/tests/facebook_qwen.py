@@ -22,7 +22,6 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
 import requests
 import uvicorn
 
@@ -70,14 +69,14 @@ MODELS = [
         "uuid": "opt-125m-a",
     },
     {
+        "name": "qwen/qwen3-0.6b",
+        "load_name": "qwen/qwen3-0.6b",
+        "uuid": "qwen3-0-6b",
+    },
+    {
         "name": "facebook/opt-125m (run-2)",
         "load_name": "facebook/opt-125m",
         "uuid": "opt-125m-b",
-    },
-    {
-        "name": "facebook/opt-125m (run-3)",
-        "load_name": "facebook/opt-125m",
-        "uuid": "opt-125m-c",
     },
 ]
 
@@ -95,26 +94,6 @@ MODEL_SHARD_EXTENSIONS = (
 NOISY_OUTPUT_PATTERNS = (
     "[Gloo] Rank",
 )
-
-
-class _TeeOutput:
-    def __init__(self, *streams):
-        self._streams = streams
-
-    def write(self, data):
-        for stream in self._streams:
-            stream.write(data)
-        return len(data)
-
-    def flush(self):
-        for stream in self._streams:
-            stream.flush()
-
-    def isatty(self):
-        return any(getattr(stream, "isatty", lambda: False)() for stream in self._streams)
-
-    def __getattr__(self, name):
-        return getattr(self._streams[0], name)
 
 
 def start_worker_controller():
@@ -157,12 +136,7 @@ def stop_worker_controller():
         _server.should_exit = True
         if _server_thread is not None:
             _server_thread.join(timeout=5)
-        if wc_server.worker_controller is not None:
-            wc_server.worker_controller.executor.shutdown()
-            wc_server.worker_controller = None
         wc_log("STOP", "Worker Controller stopped")
-        _server = None
-        _server_thread = None
 
 
 def wait_for_controller():
@@ -564,7 +538,7 @@ def measure_standard_vllm_cold_start(
 
     for i in range(120):  # Wait up to 120 seconds
         if proc.poll() is not None:
-            stderr_tail = "\n".join(line for _, line in std_log_lines[-200:])
+            stderr_tail = "\n".join(line for _, line in std_log_lines[-20:])
             print("ERROR: API server process exited before becoming ready")
             if stderr_tail:
                 print("Last stderr lines:")
@@ -663,15 +637,6 @@ def measure_standard_vllm_cold_start(
 
 
 def main():
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = os.path.join(os.getcwd(), f"benchmark_output_{ts}.txt")
-    original_stdout = sys.stdout
-    original_stderr = sys.stderr
-    log_file = open(log_path, "w", encoding="utf-8", buffering=1)
-    sys.stdout = _TeeOutput(original_stdout, log_file)
-    sys.stderr = _TeeOutput(original_stderr, log_file)
-    print(f"[log] writing benchmark output to: {log_path}")
-
     configure_debug_logging(NOISY_OUTPUT_PATTERNS)
 
     if PREWARM_MODEL_FILES:
@@ -725,11 +690,6 @@ def main():
                 result["run"] = run_idx
                 results["worker_controller"].append(result)
             time.sleep(2)
-
-    # Ensure Worker Controller is fully stopped before standard vLLM runs,
-    # to avoid shared-GPU memory profiling interference.
-    stop_worker_controller()
-    time.sleep(3)
 
     _print_banner("2: Standard vLLM")
     print()
@@ -860,11 +820,6 @@ def main():
 
     # Cleanup
     stop_worker_controller()
-
-    sys.stdout = original_stdout
-    sys.stderr = original_stderr
-    log_file.close()
-    print(f"[log] benchmark output saved: {log_path}")
 
 
 if __name__ == "__main__":

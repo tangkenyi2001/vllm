@@ -213,6 +213,202 @@ def parse_standard_startup_breakdown(log_lines: list[str]) -> dict:
     return parsed
 
 
+def _extract_event_receive_times(
+    log_lines: list,
+    event_patterns: dict[str, tuple[str, ...]],
+) -> dict[str, float]:
+    event_times: dict[str, float] = {}
+    for entry in log_lines:
+        if not (isinstance(entry, tuple) and len(entry) == 2):
+            continue
+        received_ts = float(entry[0])
+        line = str(entry[1])
+        for event_name, patterns in event_patterns.items():
+            if event_name in event_times:
+                continue
+            if any(pattern in line for pattern in patterns):
+                event_times[event_name] = received_ts
+    return event_times
+
+
+def _delta_or_none(
+    event_times: dict[str, float],
+    start_event: str,
+    end_event: str,
+) -> float | None:
+    start_ts = event_times.get(start_event)
+    end_ts = event_times.get(end_event)
+    if not isinstance(start_ts, (int, float)) or not isinstance(end_ts, (int, float)):
+        return None
+    return max(0.0, float(end_ts) - float(start_ts))
+
+
+def compute_standard_flow_timing(
+    log_lines: list,
+    spawn_call_time_s: float | None,
+    server_ready_time_s: float | None,
+) -> tuple[dict[str, float | None], dict[str, float | None]]:
+    """Compute a non-overlapping stage timing view for standard vLLM startup."""
+    event_patterns = {
+        "first_log": ("",),
+        "api_process_started": ("vLLM API server version",),
+        "engine_init": ("Initializing a V1 LLM engine",),
+        "distributed_init": ("world_size=",),
+        "model_load_start": ("Starting to load model",),
+        "model_loaded": ("Model loading took",),
+        "kv_ready": (
+            "init engine (profile, create kv cache, warmup model) took",
+        ),
+        "api_routes_ready": ("Starting vLLM API server",),
+        "health_ok": ("GET /health",),
+    }
+
+    event_times = _extract_event_receive_times(log_lines, event_patterns)
+
+    first_log_ts = None
+    if log_lines and isinstance(log_lines[0], tuple) and len(log_lines[0]) == 2:
+        first_log_ts = float(log_lines[0][0])
+        event_times.setdefault("first_log", first_log_ts)
+
+    stages: dict[str, float | None] = {
+        "spawn_call_time_s": float(spawn_call_time_s)
+        if isinstance(spawn_call_time_s, (int, float))
+        else None,
+        "spawn_to_first_log_s": _delta_or_none(event_times, "first_log", "api_process_started"),
+        "api_bootstrap_to_engine_init_s": _delta_or_none(
+            event_times,
+            "api_process_started",
+            "engine_init",
+        ),
+        "engine_init_to_distributed_init_s": _delta_or_none(
+            event_times,
+            "engine_init",
+            "distributed_init",
+        ),
+        "distributed_init_to_model_load_start_s": _delta_or_none(
+            event_times,
+            "distributed_init",
+            "model_load_start",
+        ),
+        "model_load_phase_s": _delta_or_none(
+            event_times,
+            "model_load_start",
+            "model_loaded",
+        ),
+        "post_model_to_kv_ready_s": _delta_or_none(
+            event_times,
+            "model_loaded",
+            "kv_ready",
+        ),
+        "post_kv_to_api_routes_ready_s": _delta_or_none(
+            event_times,
+            "kv_ready",
+            "api_routes_ready",
+        ),
+        "api_routes_to_health_ready_s": _delta_or_none(
+            event_times,
+            "api_routes_ready",
+            "health_ok",
+        ),
+        "spawn_to_health_ready_probe_s": float(server_ready_time_s)
+        if isinstance(server_ready_time_s, (int, float))
+        else None,
+    }
+
+    event_offsets: dict[str, float | None] = {}
+    for event_name, ts in event_times.items():
+        if isinstance(first_log_ts, (int, float)):
+            event_offsets[f"{event_name}_after_first_log_s"] = max(
+                0.0,
+                float(ts) - float(first_log_ts),
+            )
+        else:
+            event_offsets[f"{event_name}_after_first_log_s"] = None
+
+    return stages, event_offsets
+
+
+def compute_worker_controller_flow_timing(
+    create_time_s: float | None,
+    api_ready_time_s: float | None,
+    first_inference_time_s: float | None,
+    create_timings: dict | None,
+    model_load_summary: dict | None,
+    startup_timing: dict | None,
+) -> dict[str, float | None]:
+    """Compute a non-overlapping stage timing view for Worker Controller startup."""
+    attach_to_workers_s = None
+    api_process_spawn_s = None
+    if isinstance(create_timings, dict):
+        attach_parts = [
+            create_timings.get("resource_allocation_time"),
+            create_timings.get("ipc_queue_setup_time"),
+            create_timings.get("proxy_register_time"),
+        ]
+        attach_numeric = [float(v) for v in attach_parts if isinstance(v, (int, float))]
+        if attach_numeric:
+            attach_to_workers_s = sum(attach_numeric)
+        spawn_value = create_timings.get("api_process_spawn_time")
+        if isinstance(spawn_value, (int, float)):
+            api_process_spawn_s = float(spawn_value)
+
+    engine_init_profile_kv_warmup_s = None
+    remote_load_model_rpc_s = None
+    if isinstance(model_load_summary, dict):
+        init_v = model_load_summary.get("init_engine_time_seconds")
+        rpc_v = model_load_summary.get("remote_executor_load_model_rpc_time")
+        if isinstance(init_v, (int, float)):
+            engine_init_profile_kv_warmup_s = float(init_v)
+        if isinstance(rpc_v, (int, float)):
+            remote_load_model_rpc_s = float(rpc_v)
+
+    api_routes_to_health_ready_s = None
+    if isinstance(startup_timing, dict):
+        routes_v = startup_timing.get("api_routes_to_first_health_s")
+        if isinstance(routes_v, (int, float)):
+            api_routes_to_health_ready_s = float(routes_v)
+
+    startup_ready = None
+    if isinstance(create_time_s, (int, float)) and isinstance(api_ready_time_s, (int, float)):
+        startup_ready = float(create_time_s) + float(api_ready_time_s)
+
+    return {
+        "controller_create_http_roundtrip_s": float(create_time_s)
+        if isinstance(create_time_s, (int, float))
+        else None,
+        "controller_attach_to_workers_s": attach_to_workers_s,
+        "controller_spawn_api_process_s": api_process_spawn_s,
+        "engine_health_wait_after_create_s": float(api_ready_time_s)
+        if isinstance(api_ready_time_s, (int, float))
+        else None,
+        "engine_api_routes_to_health_ready_s": api_routes_to_health_ready_s,
+        "engine_init_profile_kv_cache_warmup_s": engine_init_profile_kv_warmup_s,
+        "engine_remote_load_model_rpc_s": remote_load_model_rpc_s,
+        "spawn_to_health_ready_probe_s": startup_ready,
+        "first_inference_s": float(first_inference_time_s)
+        if isinstance(first_inference_time_s, (int, float))
+        else None,
+    }
+
+
+def print_flow_stage_report(title: str, stages: dict[str, float | None]) -> None:
+    print(f"{title} flow stage timing:")
+    for key, value in stages.items():
+        if isinstance(value, (int, float)):
+            print(f"  {key}: {float(value):.3f}")
+        else:
+            print(f"  {key}: N/A")
+
+
+def print_flow_event_offsets(title: str, event_offsets: dict[str, float | None]) -> None:
+    print(f"{title} event offsets:")
+    for key, value in event_offsets.items():
+        if isinstance(value, (int, float)):
+            print(f"  {key}: {float(value):.3f}")
+        else:
+            print(f"  {key}: N/A")
+
+
 class _FilteredOutput:
     """Drop noisy low-value lines from stdout/stderr."""
 
@@ -807,149 +1003,156 @@ def save_time_savings_bar_chart(
         output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    fig, ax = plt.subplots(figsize=(16, 6.0), dpi=140)
-    ax.set_facecolor("#F5F5F6")
-    fig.patch.set_facecolor("#F5F5F6")
-    ax.axis("off")
+    std_total = _num(std_aligned.get("total_cold_start_s"))
+    wc_total = _num(wc_aligned.get("total_cold_start_s"))
+    if std_total <= 0:
+        std_total = std_api + std_worker + std_model + std_infer
+    if wc_total <= 0:
+        wc_total = wc_api + wc_attach + wc_model + wc_infer
 
-    gap = 0.28
-    api_col_w = 3.2
-    engine_col_w = 4.0
-    infer_col_w = 2.2
-    box_h = 0.55
-    engine_h = 1.02
-    sub_h = 0.34
+    std_engine = std_worker + std_model
+    wc_engine = wc_attach + wc_model
+    engine_creation_saving = std_engine - wc_engine
+    total_saving = std_total - wc_total
 
-    x_api = 0.0
-    x_engine = x_api + api_col_w + gap
-    x_infer = x_engine + engine_col_w + gap
-    canvas_w = x_infer + infer_col_w
-
-    def _box(x: float, y0: float, w: float, h: float, face: str):
-        rect = patches.FancyBboxPatch(
-            (x, y0),
-            w,
-            h,
-            boxstyle="round,pad=0.02,rounding_size=0.06",
-            linewidth=1.2,
-            edgecolor="#1B1B1B",
-            facecolor=face,
-        )
-        ax.add_patch(rect)
-
-    def _draw_row(
-        y: float,
-        row_name: str,
-        api_s: float,
-        engine_s: float,
-        engine_core_s: float,
-        infer_s: float,
-        sub1_label: str,
-        sub1_s: float,
-        sub2_label: str,
-        sub2_s: float,
-        wc_row: bool = False,
-    ):
-        _box(x_api, y, api_col_w, box_h, "#D8DDE6")
-        ax.text(x_api + api_col_w / 2, y + box_h * 0.52, "API Server Start Up", ha="center", va="center", fontsize=13, color="#30343B")
-        ax.text(x_api + api_col_w / 2, y + box_h * 0.20, _fmt_stage_seconds(api_s), ha="center", va="center", fontsize=12, color="#3A3A3A")
-
-        _box(x_engine, y, engine_col_w, engine_h, "#C7CDD8")
-        ax.text(x_engine + engine_col_w / 2, y + engine_h * 0.84, "Engine Creation", ha="center", va="center", fontsize=16, color="#30343B")
-        ax.text(x_engine + engine_col_w / 2, y + engine_h * 0.75, _fmt_stage_seconds(engine_s), ha="center", va="center", fontsize=13, color="#3A3A3A")
-
-        ax.text(x_engine + engine_col_w * 0.22, y + engine_h * 0.52, "Engine Core Init", ha="center", va="center", fontsize=13, color="#2F3540")
-        ax.text(x_engine + engine_col_w * 0.22, y + engine_h * 0.43, _fmt_stage_seconds(engine_core_s), ha="center", va="center", fontsize=12, color="#3A3A3A")
-
-        sub_gap = 0.04
-        sub_y = y + 0.02
-        left_margin = 1.35
-        right_margin = 0.04
-        sub_avail_w = engine_col_w - left_margin - right_margin
-        sub1_w = (sub_avail_w - sub_gap) * 0.48
-        sub2_w = (sub_avail_w - sub_gap) * 0.52
-        sub1_x = x_engine + left_margin
-        sub2_x = sub1_x + sub1_w + sub_gap
-
-        sub1_face = "#D9E8FF" if wc_row else "#D8DDE6"
-        _box(sub1_x, sub_y, sub1_w, sub_h, sub1_face)
-        _box(sub2_x, sub_y, sub2_w, sub_h, "#D8DDE6")
-
-        ax.text(sub1_x + sub1_w / 2, sub_y + sub_h * 0.60, sub1_label, ha="center", va="center", fontsize=11.5, color="#30343B")
-        ax.text(sub1_x + sub1_w / 2, sub_y + sub_h * 0.22, _fmt_stage_seconds(sub1_s), ha="center", va="center", fontsize=11, color="#3A3A3A")
-        ax.text(sub2_x + sub2_w / 2, sub_y + sub_h * 0.60, sub2_label, ha="center", va="center", fontsize=12.5, color="#30343B")
-        ax.text(sub2_x + sub2_w / 2, sub_y + sub_h * 0.22, _fmt_stage_seconds(sub2_s), ha="center", va="center", fontsize=12, color="#3A3A3A")
-
-        _box(x_infer, y, infer_col_w, box_h, "#E8DEBE")
-        ax.text(x_infer + infer_col_w / 2, y + box_h * 0.52, "Inference", ha="center", va="center", fontsize=15, color="#30343B")
-        ax.text(x_infer + infer_col_w / 2, y + box_h * 0.20, _fmt_stage_seconds(infer_s), ha="center", va="center", fontsize=13, color="#3A3A3A")
-
-        if row_name == "Standard vLLM":
-            ax.text(canvas_w / 2, y + engine_h + 0.10, row_name, ha="center", va="bottom", fontsize=17, color="#333333")
-        else:
-            ax.text(canvas_w / 2, y - 0.20, row_name, ha="center", va="top", fontsize=17, color="#333333")
-
-    _draw_row(
-        y=1.46,
-        row_name="Standard vLLM",
-        api_s=std_api,
-        engine_s=std_engine_total,
-        engine_core_s=std_engine_base,
-        infer_s=std_infer,
-        sub1_label="Worker Process\nStartup",
-        sub1_s=std_worker,
-        sub2_label="Model Loading",
-        sub2_s=std_model,
-        wc_row=False,
-    )
-    _draw_row(
-        y=0.42,
-        row_name="Worker Controller",
-        api_s=wc_api,
-        engine_s=wc_engine_total,
-        engine_core_s=wc_engine_base,
-        infer_s=wc_infer,
-        sub1_label="Attach to pre-\nwarmed workers",
-        sub1_s=wc_attach,
-        sub2_label="Model Loading",
-        sub2_s=wc_model,
-        wc_row=True,
+    plt.rcParams.update(
+        {
+            "font.family": "serif",
+            "axes.edgecolor": "#444444",
+            "axes.linewidth": 1.0,
+        }
     )
 
-    stage_diffs = [
-        ("API Server Start Up", std_api - wc_api),
-        ("Engine Creation", std_engine_total - wc_engine_total),
-        ("Inference", std_infer - wc_infer),
+    fig, ax = plt.subplots(figsize=(13, 6), dpi=180)
+
+    y_labels = ["Standard vLLM", "Worker Controller"]
+    y_pos = [1, 0]
+    h = 0.42
+
+    stage_styles = [
+        ("API Startup", "#F5F5F5", "", "#333333"),
+        ("Worker Startup", "#DEDEDE", "///", "#333333"),
+        ("Model Loading", "#C4C4C4", "\\\\", "#333333"),
+        ("First Inference", "#8A8A8A", "", "#333333"),
     ]
-    largest_saving_label, largest_saving = max(stage_diffs, key=lambda item: item[1])
 
-    total_saved = None
-    if isinstance(std_aligned.get("total_cold_start_s"), (int, float)) and isinstance(
-        wc_aligned.get("total_cold_start_s"), (int, float)
-    ):
-        total_saved = float(std_aligned["total_cold_start_s"]) - float(
-            wc_aligned["total_cold_start_s"]
-        )
+    std_vals = [std_api, std_worker, std_model, std_infer]
+    wc_vals = [wc_api, wc_attach, wc_model, wc_infer]
 
-    if isinstance(total_saved, (int, float)):
-        title = f"Worker Controller vs Standard vLLM | Total cold-start saved: {total_saved:+.2f}s"
-    else:
-        title = "Worker Controller vs Standard vLLM"
+    def _draw_stacked_bar(y: int, vals: list[float]) -> None:
+        left = 0.0
+        for idx, (label, face, hatch, edge) in enumerate(stage_styles):
+            value = max(0.0, float(vals[idx]))
+            ax.barh(
+                y,
+                value,
+                left=left,
+                height=h,
+                color=face,
+                hatch=hatch,
+                edgecolor=edge,
+                linewidth=1.0,
+                label=label if y == y_pos[0] else None,
+            )
+            if value >= 0.45:
+                ax.text(
+                    left + value / 2,
+                    y,
+                    _fmt_stage_seconds(value),
+                    ha="center",
+                    va="center",
+                    fontsize=10,
+                )
+            left += value
 
-    fig.suptitle(title, fontsize=18, fontweight="bold", y=0.985)
+    _draw_stacked_bar(y_pos[0], std_vals)
+    _draw_stacked_bar(y_pos[1], wc_vals)
+
+    x_max = max(std_total, wc_total) * 1.18
+    ax.set_xlim(0, x_max)
+    tick_step = 2 if x_max <= 16 else 5
+    ax.set_xticks([i for i in range(0, int(x_max) + 1, tick_step)])
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(y_labels, fontsize=16)
+    ax.tick_params(axis="x", labelsize=12)
+    ax.grid(axis="x", linestyle="-", linewidth=0.6, alpha=0.18)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.set_xlabel("Seconds", fontsize=12)
+
+    total_pad = 0.14 * max(1.0, x_max / 12)
+    ax.text(std_total + total_pad, y_pos[0] + 0.03, f"Total: {std_total:.2f}s", va="center", fontsize=13)
+    ax.text(wc_total + total_pad, y_pos[1] + 0.03, f"Total: {wc_total:.2f}s", va="center", fontsize=13)
     ax.text(
-        canvas_w / 2,
-        0.035,
-        f"Largest stage-level saving: {largest_saving_label} ({largest_saving:+.2f}s)",
-        ha="center",
-        va="bottom",
-        fontsize=13,
-        color="#14532D" if largest_saving >= 0 else "#7F1D1D",
+        std_total + total_pad,
+        y_pos[0] - 0.10,
+        f"Inference: {_fmt_stage_seconds(std_infer)}",
+        va="center",
+        fontsize=10,
+        color="#333333",
+    )
+    ax.text(
+        wc_total + total_pad,
+        y_pos[1] - 0.10,
+        f"Inference: {_fmt_stage_seconds(wc_infer)}",
+        va="center",
+        fontsize=10,
+        color="#333333",
     )
 
-    ax.set_xlim(-0.3, canvas_w + 0.3)
-    ax.set_ylim(0.0, 2.45)
-    plt.tight_layout(rect=(0.01, 0.03, 0.99, 0.95))
+    handles, labels = ax.get_legend_handles_labels()
+    legend = ax.legend(
+        handles,
+        labels,
+        loc="upper right",
+        bbox_to_anchor=(0.985, 1.06),
+        ncol=2,
+        frameon=True,
+        fontsize=11,
+    )
+    legend.get_frame().set_linewidth(1.0)
+
+    std_engine_visible = std_worker + std_model
+    wc_engine_visible = wc_attach + wc_model
+    savings_text = (
+        f"Cold-start saving: {total_saving:+.2f}s\n"
+        f"Engine creation (Std): {std_engine_visible:.2f}s\n"
+        f"Engine creation (WC): {wc_engine_visible:.2f}s\n"
+        f"Engine creation saving: {engine_creation_saving:+.2f}s\n"
+        f"Inference (Std/WC): {std_infer:.2f}s / {wc_infer:.2f}s"
+    )
+    ax.text(
+        0.995,
+        -0.10,
+        savings_text,
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=11,
+        bbox={
+            "boxstyle": "round,pad=0.3",
+            "facecolor": "#F7F7F7",
+            "edgecolor": "#AAAAAA",
+            "linewidth": 0.8,
+        },
+    )
+
+    fig.text(
+        0.5,
+        0.01,
+        "Figure 1: Latency Breakdown Comparing Standard vLLM and Worker Controller",
+        ha="center",
+        fontsize=14,
+    )
+
+    fig.suptitle(
+        f"Overall cold-start saving: {total_saving:+.2f}s",
+        fontsize=16,
+        y=0.98,
+    )
+
+    plt.tight_layout(rect=(0.02, 0.08, 0.98, 0.92))
     fig.savefig(output_file, bbox_inches="tight")
     plt.close(fig)
 
@@ -1182,9 +1385,9 @@ def _format_metric_flags(metric: str, std_src: str, wc_src: str) -> str:
 
 
 def print_aligned_startup_comparison(results: dict, models: list[dict]) -> None:
-    print("\n" + "=" * 98)
+    print("\n" + "=" * 80)
     print("ALIGNED STARTUP COMPARISON (shared metric names, seconds)")
-    print("=" * 98)
+    print("=" * 80)
 
     metric_labels = {
         "startup_ready_s": "Startup ready",
@@ -1252,11 +1455,11 @@ def print_aligned_startup_comparison(results: dict, models: list[dict]) -> None:
         print(f"\n{model_name}:")
         print("  COMPARABLE METRICS")
         print(
-            "  {:<36} {:>10} {:>10} {:>11}".format(
+            "  {:<32} {:>10} {:>10} {:>11}".format(
                 "Metric", "Standard", "WorkerCtrl", "Δ(Std-WC)"
             )
         )
-        print("  " + "-" * 82)
+        print("  " + "-" * 68)
 
         comparable_rows: list[tuple[str, float, str, float, str]] = []
 
@@ -1272,7 +1475,7 @@ def print_aligned_startup_comparison(results: dict, models: list[dict]) -> None:
 
         for metric, std_v, std_src, wc_v, wc_src in comparable_rows:
             print(
-                "  {:<36} {:>10} {:>10} {:>11}".format(
+                "  {:<32} {:>10} {:>10} {:>11}".format(
                     metric_labels.get(metric, metric),
                     _fmt_with_src(std_v, std_src),
                     _fmt_with_src(wc_v, wc_src),
