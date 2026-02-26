@@ -99,6 +99,7 @@ class EngineCore:
         self.log_stats = log_stats
 
         # Setup Model.
+        self._engine_init_start_wallclock = time.time()
         self.model_executor = executor_class(vllm_config)
         if executor_fail_callback is not None:
             self.model_executor.register_failure_callback(executor_fail_callback)
@@ -312,6 +313,7 @@ class EngineCore:
 
         elapsed = time.time() - start
         self._init_engine_time_seconds = elapsed
+        self._engine_init_end_wallclock = time.time()
         logger.info_once(
             "init engine (profile, create kv cache, warmup model) took %.2f seconds",
             elapsed,
@@ -341,6 +343,35 @@ class EngineCore:
     def get_init_engine_time_seconds(self) -> float | None:
         """Get elapsed time for engine init (profile + KV cache + warmup)."""
         return getattr(self, "_init_engine_time_seconds", None)
+
+    def get_engine_init_wallclocks(self) -> dict[str, float | None]:
+        """Get absolute wall-clock timestamps for engine initialization.
+
+        Returns dict with:
+            - engine_init_start_wallclock: time.time() before executor creation
+            - engine_init_end_wallclock: time.time() after KV cache + warmup
+            - model_load_start_wallclock: time.time() before load_model RPC
+            - model_load_end_wallclock: time.time() after load_model RPC
+        """
+        result: dict[str, float | None] = {
+            "engine_init_start_wallclock": getattr(
+                self, "_engine_init_start_wallclock", None
+            ),
+            "engine_init_end_wallclock": getattr(
+                self, "_engine_init_end_wallclock", None
+            ),
+            "model_load_start_wallclock": None,
+            "model_load_end_wallclock": None,
+        }
+        executor = getattr(self, "model_executor", None)
+        if executor is not None:
+            result["model_load_start_wallclock"] = getattr(
+                executor, "model_load_start_wallclock", None
+            )
+            result["model_load_end_wallclock"] = getattr(
+                executor, "model_load_end_wallclock", None
+            )
+        return result
 
     def add_request(self, request: Request, request_wave: int = 0):
         """Add request to the scheduler.

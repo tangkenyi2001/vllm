@@ -485,6 +485,13 @@ async def get_model_load_timings(raw_request: Request):
         timings = engine_core.get_model_load_timings()
 
     if timings:
+        # Collect wall-clock timestamps if available
+        wallclocks = None
+        if hasattr(client, "get_engine_init_wallclocks"):
+            wallclocks = client.get_engine_init_wallclocks()
+        elif engine_core is not None and hasattr(engine_core, "get_engine_init_wallclocks"):
+            wallclocks = engine_core.get_engine_init_wallclocks()
+
         return JSONResponse(
             content={
                 "worker_timings": timings,
@@ -513,6 +520,7 @@ async def get_model_load_timings(raw_request: Request):
                     ),
                     "init_engine_time_seconds": init_engine_time_seconds,
                 },
+                "wallclocks": wallclocks,
                 "debug": debug_info,
             }
         )

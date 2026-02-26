@@ -38,10 +38,13 @@ class RemoteExecutor(Executor):
         # Trigger model loading on the assigned workers
         # Use None timeout as loading can take time
         load_start = time.time()
+        self.model_load_start_wallclock = load_start
         load_result = self.collective_rpc(
             "load_model", args=(self.vllm_config,), timeout=None
         )
-        load_elapsed = time.time() - load_start
+        load_end = time.time()
+        self.model_load_end_wallclock = load_end
+        load_elapsed = load_end - load_start
         self.load_model_rpc_time_seconds = load_elapsed
 
         # Store timing information from workers

@@ -177,6 +177,10 @@ class InprocAsyncEngineCore:
         """Get engine init time (profile + KV cache + warmup)."""
         return self.engine_core.get_init_engine_time_seconds()
 
+    def get_engine_init_wallclocks(self) -> dict[str, float | None]:
+        """Get absolute wall-clock timestamps for engine initialization."""
+        return self.engine_core.get_engine_init_wallclocks()
+
     async def collective_rpc_async(
         self,
         method: str | Callable[..., _R],
