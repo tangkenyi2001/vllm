@@ -122,12 +122,22 @@ class ResourceAllocator:
 
 
 class WorkerController:
-    def __init__(self, start_port: int = 8001) -> None:
+    def __init__(
+        self,
+        num_workers: int = 1,
+        tensor_parallel_size: int = 1,
+        pipeline_parallel_size: int = 1,
+        gpu_memory_utilization: float = 0.85,
+        enforce_eager: bool = False,
+        start_port: int = 8001,
+    ) -> None:
         # Modified Executor will create the empty worker processes and return the pipes
-        model_config = DummyModelConfig("dummy", enforce_eager=True)
-        cache_config = CacheConfig(gpu_memory_utilization=0.85)
+        model_config = DummyModelConfig("dummy", enforce_eager=enforce_eager)
+        cache_config = CacheConfig(gpu_memory_utilization=gpu_memory_utilization)
         parallel_config = ParallelConfig(
-            pipeline_parallel_size=1,
+            tensor_parallel_size=tensor_parallel_size,
+            pipeline_parallel_size=pipeline_parallel_size,
+            world_size=num_workers,
             worker_cls="vllm.worker_controller.worker.gpu_worker.Worker",
         )
 

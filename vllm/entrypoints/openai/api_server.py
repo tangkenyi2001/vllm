@@ -134,6 +134,21 @@ ENDPOINT_LOAD_METRICS_FORMAT_HEADER_LABEL = "endpoint-load-metrics-format"
 
 _running_tasks: set[asyncio.Task] = set()
 
+import time
+def _elapsed_since_start() -> str:
+    """Return seconds elapsed since VLLM_START_TIME env var was set.
+
+    Returns an empty string if the env var is not set (e.g. when the server
+    is started directly, not via std_server.py).
+    """
+    raw = os.environ.get("VLLM_START_TIME")
+    if raw is None:
+        return ""
+    try:
+        return f" [+{time.time() - float(raw):.5f}s since start]"
+    except ValueError:
+        return ""
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -156,6 +171,7 @@ async def lifespan(app: FastAPI):
         # Reduces pause times of oldest generation collections.
         freeze_gc_heap()
         try:
+            logger.info("[LOGS] Server startup complete%s", _elapsed_since_start())
             yield
         finally:
             if task is not None:
@@ -173,6 +189,8 @@ async def build_async_engine_client(
     disable_frontend_multiprocessing: bool | None = None,
     client_config: dict[str, Any] | None = None,
 ) -> AsyncIterator[EngineClient]:
+    decorate_logs("Engine Client")
+    logger.info(f"[ LOGS] Building engine client | {_elapsed_since_start()}")
     if os.getenv("VLLM_WORKER_MULTIPROC_METHOD") == "forkserver":
         # The executor is expected to be mp.
         # Pre-import heavy modules in the forkserver process
@@ -182,6 +200,7 @@ async def build_async_engine_client(
         forkserver.ensure_running()
         logger.debug("Forkserver setup complete!")
 
+ 
     # Context manager to handle engine_client lifecycle
     # Ensures everything is shutdown and cleaned up on error/exit
     engine_args = AsyncEngineArgs.from_cli_args(args)
@@ -233,6 +252,7 @@ async def build_async_engine_client_from_engine_args(
     client_index = client_config.pop("client_index", 0)
 
     try:
+        logger.info("[LOGS] Creating AsyncLLM from vllm config%s", _elapsed_since_start())
         async_llm = AsyncLLM.from_vllm_config(
             vllm_config=vllm_config,
             usage_context=usage_context,
@@ -247,7 +267,7 @@ async def build_async_engine_client_from_engine_args(
         # Don't keep the dummy data in memory
         assert async_llm is not None
         await async_llm.reset_mm_cache()
-
+        logger.info("[LOGS] AsyncLLM ready%s", _elapsed_since_start())
         yield async_llm
     finally:
         if async_llm:
@@ -1973,7 +1993,7 @@ def validate_api_server_args(args):
 def setup_server(args):
     """Validate API server args, set up signal handler, create socket
     ready to serve."""
-
+    logger.info("Server start%s", _elapsed_since_start())
     logger.info("vLLM API server version %s", VLLM_VERSION)
     log_non_default_args(args)
 
@@ -2039,7 +2059,6 @@ async def run_server_worker(
     log_config = load_log_config(args.log_config_file)
     if log_config is not None:
         uvicorn_kwargs["log_config"] = log_config
-
     async with build_async_engine_client(
         args,
         client_config=client_config,
@@ -2048,11 +2067,11 @@ async def run_server_worker(
         app = build_app(args)
 
         await init_app_state(engine_client, app.state, args)
-
         logger.info(
-            "Starting vLLM API server %d on %s",
+            "Starting vLLM API server %d on %s%s",
             engine_client.vllm_config.parallel_config._api_process_rank,
             listen_address,
+            _elapsed_since_start(),
         )
         shutdown_task = await serve_http(
             app,
@@ -2092,5 +2111,4 @@ if __name__ == "__main__":
     parser = make_arg_parser(parser)
     args = parser.parse_args()
     validate_parsed_serve_args(args)
-
     uvloop.run(run_server(args))

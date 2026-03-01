@@ -59,6 +59,23 @@ from vllm.v1.worker.worker_base import WorkerWrapperBase
 logger = init_logger(__name__)
 
 
+import time
+def _elapsed_since_start() -> str:
+    """Return seconds elapsed since VLLM_START_TIME env var was set.
+
+    Returns an empty string if the env var is not set (e.g. when the server
+    is started directly, not via std_server.py).
+    """
+    raw = os.environ.get("VLLM_START_TIME")
+    if raw is None:
+        return ""
+    try:
+        return f" [+{time.time() - float(raw):.2f}s since start]"
+    except ValueError:
+        return ""
+
+
+
 class FutureWrapper(Future):
     def __init__(
         self,
@@ -98,6 +115,8 @@ class MultiprocExecutor(Executor):
     def _init_executor(self) -> None:
         # Call self.shutdown at exit to clean up
         # and ensure workers will be terminated.
+        logger.info(f"[LOGS] Multi-Proc Executor initializing | {_elapsed_since_start()}")
+        
         self._finalizer = weakref.finalize(self, self.shutdown)
         self.is_failed = False
         self.shutdown_event = threading.Event()
@@ -565,8 +584,11 @@ class WorkerProc:
 
         # Load model
         self._init_message_queues(input_shm_handle, vllm_config)
+        logger.info(f"[LOGS] Worker {os.getpid()} loading model initializing | {_elapsed_since_start()}")
+        
         self.worker.load_model()
-
+        
+        logger.info(f"[LOGS] Worker {os.getpid()} loaded model| {_elapsed_since_start()}")
         # Enable environment variable cache (e.g. assume no more
         # environment variable overrides after this point)
         enable_envs_cache()
@@ -725,7 +747,12 @@ class WorkerProc:
 
         try:
             reader.close()
+            worker_start=time.time()
+            logger.info(f"[LOGS] Worker Process {os.getpid()} starting,{_elapsed_since_start()}")
+
             worker = WorkerProc(*args, **kwargs)
+
+            logger.info(f"[LOGS] Worker Process {os.getpid()} Ready | Time taken for worker process to start {time.time()-worker_start}, | {_elapsed_since_start()}")
 
             # Send READY once we know everything is loaded
             ready_writer.send(

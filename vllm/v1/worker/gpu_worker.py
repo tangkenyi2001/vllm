@@ -59,6 +59,21 @@ if TYPE_CHECKING:
     from vllm.model_executor.model_loader.tensorizer import TensorizerConfig
     from vllm.v1.core.sched.output import SchedulerOutput
 
+import time
+def _elapsed_since_start() -> str:
+    """Return seconds elapsed since VLLM_START_TIME env var was set.
+
+    Returns an empty string if the env var is not set (e.g. when the server
+    is started directly, not via std_server.py).
+    """
+    raw = os.environ.get("VLLM_START_TIME")
+    if raw is None:
+        return ""
+    try:
+        return f" [+{time.time() - float(raw):.2f}s since start]"
+    except ValueError:
+        return ""
+
 
 class Worker(WorkerBase):
     def __init__(
@@ -69,6 +84,8 @@ class Worker(WorkerBase):
         distributed_init_method: str,
         is_driver_worker: bool = False,
     ):
+        logger.info(f"GPU Worker initializing | {_elapsed_since_start()}")
+
         super().__init__(
             vllm_config=vllm_config,
             local_rank=local_rank,

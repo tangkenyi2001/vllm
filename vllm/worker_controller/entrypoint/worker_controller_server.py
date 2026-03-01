@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -125,25 +126,54 @@ class EngineStatusResponse(BaseModel):
     create_timings: Optional[Dict[str, float]] = None
 
 
+# Global WorkerController instance
+worker_controller: Optional[WorkerController] = None
+
+
+def make_lifespan(
+    num_workers: int = 1,
+    tensor_parallel_size: int = 1,
+    pipeline_parallel_size: int = 1,
+    gpu_memory_utilization: float = 0.9,
+    enforce_eager: bool = False,
+    host: str = "0.0.0.0",
+    port: int = 8000,
+):
+    """Factory that returns a lifespan context manager configured with the given arguments."""
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        global worker_controller
+        logger.info(
+            "Initializing WorkerController "
+            f"(num_workers={num_workers}, "
+            f"tensor_parallel_size={tensor_parallel_size}, "
+            f"pipeline_parallel_size={pipeline_parallel_size}, "
+            f"gpu_memory_utilization={gpu_memory_utilization}, "
+            f"enforce_eager={enforce_eager})..."
+        )
+        worker_controller = WorkerController(
+            num_workers=num_workers,
+            tensor_parallel_size=tensor_parallel_size,
+            pipeline_parallel_size=pipeline_parallel_size,
+            gpu_memory_utilization=gpu_memory_utilization,
+            enforce_eager=enforce_eager,
+        )
+        logger.info(
+            f"WorkerController initialized with {len(worker_controller.executor.workers)} workers"
+        )
+        yield
+        # Shutdown: clean up any remaining engines
+        logger.info("Shutting down WorkerController...")
+
+    return lifespan
+
+
 app = FastAPI(
     title="Worker Controller API",
     description="API for managing vLLM engines with RemoteExecutor and shared worker pool",
     version="1.0.0",
 )
-
-# Global WorkerController instance
-worker_controller: Optional[WorkerController] = None
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize WorkerController on startup."""
-    global worker_controller
-    logger.info("Initializing WorkerController...")
-    worker_controller = WorkerController()
-    logger.info(
-        f"WorkerController initialized with {len(worker_controller.executor.workers)} workers"
-    )
 
 
 @app.get("/")
@@ -499,9 +529,18 @@ def list_workers():
     return {"num_workers": len(workers), "workers": workers}
 
 
-if __name__ == "__main__":
-    # Use v0 as requested
-    os.environ["VLLM_USE_V1"] = "0"
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Worker Controller API Server")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--port", type=int, default=8000, help="Port to listen on")
+    parser.add_argument("--num-workers", type=int, default=1, help="Total number of GPU workers to pre-spawn")
+    parser.add_argument("--tensor-parallel-size", type=int, default=1, help="Default tensor parallel degree")
+    parser.add_argument("--pipeline-parallel-size", type=int, default=1, help="Default pipeline parallel degree")
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.9, help="Fraction of GPU memory to use (0.0–1.0)")
+    parser.add_argument("--enforce-eager", action="store_true", default=False, help="Disable CUDA graph capture and always run in eager mode")
+    args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
@@ -509,7 +548,22 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    logger.info("Starting Worker Controller API on port 8000")
-    logger.info("API docs will be available at http://localhost:8000/docs")
+    # Attach the configured lifespan to the app before serving
+    app.router.lifespan_context = make_lifespan(
+        num_workers=args.num_workers,
+        tensor_parallel_size=args.tensor_parallel_size,
+        pipeline_parallel_size=args.pipeline_parallel_size,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        enforce_eager=args.enforce_eager,
+        host=args.host,
+        port=args.port,
+    )
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    logger.info(f"Starting Worker Controller API on {args.host}:{args.port}")
+    logger.info(f"API docs will be available at http://localhost:{args.port}/docs")
+
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+
+if __name__ == "__main__":
+    main()
+    
