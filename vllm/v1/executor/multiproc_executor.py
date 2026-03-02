@@ -224,6 +224,15 @@ class MultiprocExecutor(Executor):
             for response_mq in self.response_mqs:
                 response_mq.wait_until_ready()
             mq_ready_time = time.time() - mq_ready_start
+            self._model_load_seconds = worker_ready_time
+            # Propagate sub-timings from rank-0 worker
+            rank0_timings = getattr(WorkerProc, '_rank0_timings', None)
+            if rank0_timings:
+                self._dist_init_seconds = rank0_timings.get('device_init')
+                self._weight_load_seconds = rank0_timings.get('weight_load')
+                self._runner_init_seconds = 0.0  # included in device_init for multiproc
+                self._worker_total_seconds = rank0_timings.get('worker_total')
+                WorkerProc._rank0_timings = None  # clean up
             logger.info(
                 "MultiprocExecutor startup breakdown: worker_ready=%.2fs, mq_ready=%.2fs, total=%.2fs",
                 worker_ready_time,
@@ -574,19 +583,24 @@ class WorkerProc:
             )
             self.async_output_copy_thread.start()
 
-        # Initialize device
+        # Initialize device (includes dist init + model runner construction)
+        device_init_start = time.time()
         self.worker.init_device()
+        self._device_init_seconds = time.time() - device_init_start
 
         # Set process title and log prefix
         self.setup_proc_title_and_log_prefix(
             enable_ep=vllm_config.parallel_config.enable_expert_parallel
         )
 
-        # Load model
+        # Load model (weights loading)
         self._init_message_queues(input_shm_handle, vllm_config)
         logger.info(f"[LOGS] Worker {os.getpid()} loading model initializing | {_elapsed_since_start()}")
         
+        weight_load_start = time.time()
         self.worker.load_model()
+        self._weight_load_seconds = time.time() - weight_load_start
+        self._worker_total_seconds = self._device_init_seconds + self._weight_load_seconds
         
         logger.info(f"[LOGS] Worker {os.getpid()} loaded model| {_elapsed_since_start()}")
         # Enable environment variable cache (e.g. assume no more
@@ -683,6 +697,9 @@ class WorkerProc:
                     ready_proc_handles[idx] = WorkerProc.wait_for_response_handle_ready(
                         response, unready_proc_handle
                     )
+                    # Capture rank 0 timings
+                    if idx == 0 and "timings" in response:
+                        WorkerProc._rank0_timings = response["timings"]
                 except EOFError:
                     e.__suppress_context__ = True
                     raise e from None
@@ -760,6 +777,11 @@ class WorkerProc:
                     "status": WorkerProc.READY_STR,
                     "handle": worker.worker_response_mq.export_handle(),
                     "peer_response_handles": worker.peer_response_handles,
+                    "timings": {
+                        "device_init": getattr(worker, '_device_init_seconds', None),
+                        "weight_load": getattr(worker, '_weight_load_seconds', None),
+                        "worker_total": getattr(worker, '_worker_total_seconds', None),
+                    },
                 }
             )
 

@@ -39,7 +39,7 @@ def measure_worker_controller_cold_start(
         "--port",
         str(port),
         "--gpu-memory-utilization",
-        "0.3",
+        "0.8",
         "--enforce-eager",
         "--tensor-parallel-size",
         "2"

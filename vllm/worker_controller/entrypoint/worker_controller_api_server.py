@@ -305,7 +305,7 @@ async def build_async_engine_client_from_engine_args(
         # Don't keep the dummy data in memory
         assert async_llm is not None
         await async_llm.reset_mm_cache()
-
+        logger.info("[LOGS] AsyncLLM ready%s", _elapsed_since_start())
         yield async_llm
     finally:
         if async_llm:

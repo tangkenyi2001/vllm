@@ -98,6 +98,11 @@ class Executor(ABC):
         self.device_config = vllm_config.device_config
         self.speculative_config = vllm_config.speculative_config
         self.observability_config = vllm_config.observability_config
+        self._model_load_seconds: float | None = None
+        self._dist_init_seconds: float | None = None
+        self._weight_load_seconds: float | None = None
+        self._runner_init_seconds: float | None = None
+        self._worker_total_seconds: float | None = None
         self._init_executor()
         self.is_sleeping = False
         self.sleeping_tags: set[str] = set()

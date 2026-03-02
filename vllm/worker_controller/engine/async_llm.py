@@ -69,6 +69,20 @@ logger = init_logger(__name__)
 _R = TypeVar("_R")  # Return type for collective_rpc
 
 
+def _elapsed_since_start() -> str:
+    """Return seconds elapsed since VLLM_START_TIME or
+    WORKER_CONTROLLER_START_TIME env var was set."""
+    raw = os.environ.get("VLLM_START_TIME") or os.environ.get(
+        "WORKER_CONTROLLER_START_TIME"
+    )
+    if raw is None:
+        return ""
+    try:
+        return f" [+{time.time() - float(raw):.2f}s since start]"
+    except ValueError:
+        return ""
+
+
 @dataclass
 class InprocResources:
     """Resources for in-process engine core, used for clean shutdown."""
@@ -95,12 +109,17 @@ class InprocAsyncEngineCore:
         self.engine_ranks_managed = [0]  # Single engine for now
 
         # Create the EngineCore in-process
-        logger.info("Creating in-process EngineCore (avoiding subprocess overhead)")
+        logger.info("[LOGS] Creating in-process EngineCore (avoiding subprocess overhead)%s",
+                     _elapsed_since_start())
+        engine_core_start = time.time()
         self.engine_core = EngineCore(
             vllm_config=vllm_config,
             executor_class=executor_class,
             log_stats=log_stats,
         )
+        engine_core_elapsed = time.time() - engine_core_start
+        logger.info("[LOGS] EngineCore ready (%.2fs)%s",
+                     engine_core_elapsed, _elapsed_since_start())
 
         # Thread pool for running blocking EngineCore operations
         self._executor = ThreadPoolExecutor(

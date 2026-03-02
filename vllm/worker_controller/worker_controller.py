@@ -22,7 +22,7 @@ import uvloop
 logger = init_logger(__name__)
 import time
 def _elapsed_since_start() -> str:
-    """Return seconds elapsed since VLLM_START_TIME env var was set.
+    """Return seconds elapsed since WORKER_CONTROLLER_START_TIME env var was set.
 
     Returns an empty string if the env var is not set (e.g. when the server
     is started directly, not via std_server.py).
@@ -55,6 +55,18 @@ def run_api_server(request_queue, response_queue, engine_uuid, vllm_config, port
     # Override with provided config
     args.model = vllm_config.model_config.model
     args.port = port
+
+    # Propagate parallel config so the child engine sees the correct TP/PP sizes
+    args.tensor_parallel_size = vllm_config.parallel_config.tensor_parallel_size
+    args.pipeline_parallel_size = vllm_config.parallel_config.pipeline_parallel_size
+
+    # Propagate other critical engine settings from the parent config
+    args.gpu_memory_utilization = vllm_config.cache_config.gpu_memory_utilization
+    args.enforce_eager = vllm_config.model_config.enforce_eager
+    args.dtype = str(vllm_config.model_config.dtype)
+    args.tokenizer = vllm_config.model_config.tokenizer
+    args.trust_remote_code = vllm_config.model_config.trust_remote_code
+    args.seed = vllm_config.model_config.seed
 
     # Inject queues and config for RemoteExecutor
     args.request_queue = request_queue
@@ -131,20 +143,37 @@ class ResourceAllocator:
 class WorkerController:
     def __init__(
         self,
-        num_workers: int = 1,
         tensor_parallel_size: int = 1,
         pipeline_parallel_size: int = 1,
         gpu_memory_utilization: float = 0.85,
         enforce_eager: bool = False,
         start_port: int = 8001,
     ) -> None:
+        import torch
+        gpu_count = torch.cuda.device_count()
+        workers_per_engine = tensor_parallel_size * pipeline_parallel_size
+        if gpu_count == 0:
+            raise RuntimeError("No GPUs detected")
+        if gpu_count % workers_per_engine != 0:
+            raise ValueError(
+                f"GPU count ({gpu_count}) not divisible by "
+                f"TP×PP ({tensor_parallel_size}×{pipeline_parallel_size}="
+                f"{workers_per_engine})"
+            )
+        logger.info(
+            f"Auto-detected {gpu_count} GPUs, "
+            f"TP={tensor_parallel_size}, PP={pipeline_parallel_size}, "
+            f"workers_per_engine={workers_per_engine}, "
+            f"max_engines={gpu_count // workers_per_engine}"
+        )
+
         # Modified Executor will create the empty worker processes and return the pipes
         model_config = DummyModelConfig("dummy", enforce_eager=enforce_eager)
         cache_config = CacheConfig(gpu_memory_utilization=gpu_memory_utilization)
         parallel_config = ParallelConfig(
             tensor_parallel_size=tensor_parallel_size,
             pipeline_parallel_size=pipeline_parallel_size,
-            world_size=num_workers,
+            world_size=gpu_count,
             worker_cls="vllm.worker_controller.worker.gpu_worker.Worker",
         )
 

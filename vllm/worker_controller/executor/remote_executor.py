@@ -54,9 +54,26 @@ class RemoteExecutor(Executor):
     def _init_executor(self) -> None:
         # Trigger model loading on the assigned workers
         # Use None timeout as loading can take time
-        self.collective_rpc(
+        logger.info("[LOGS] Starting model loading (via RPC)%s",
+                     _elapsed_since_start())
+        load_start = time.time()
+        worker_timings = self.collective_rpc(
             "load_model", args=(self.vllm_config,), timeout=None
         )
+        self._model_load_seconds = time.time() - load_start
+        # Extract sub-timings from rank-0 worker (all workers do ~same work)
+        if isinstance(worker_timings, list) and len(worker_timings) > 0:
+            t = worker_timings[0] if isinstance(worker_timings[0], dict) else {}
+        elif isinstance(worker_timings, dict):
+            t = worker_timings
+        else:
+            t = {}
+        self._dist_init_seconds = t.get("dist_init_time")
+        self._weight_load_seconds = t.get("weight_load_time")
+        self._runner_init_seconds = t.get("model_runner_init_time")
+        self._worker_total_seconds = t.get("total_time")
+        logger.info("[LOGS] Model loading complete (%.2fs)%s",
+                     self._model_load_seconds, _elapsed_since_start())
         self.output_rank = self._get_output_rank()
 
     def _get_output_rank(self) -> int:

@@ -113,8 +113,26 @@ class EngineCore:
 
         self.log_stats = log_stats
 
+        engine_init_start = time.time()
+
         # Setup Model.
+        logger.info("[LOGS] Creating executor (%s)%s",
+                     executor_class.__name__, _elapsed_since_start())
+        executor_start = time.time()
         self.model_executor = executor_class(vllm_config)
+        self._executor_setup_seconds = time.time() - executor_start
+        self._model_load_seconds = getattr(
+            self.model_executor, '_model_load_seconds', None)
+        self._dist_init_seconds = getattr(
+            self.model_executor, '_dist_init_seconds', None)
+        self._weight_load_seconds = getattr(
+            self.model_executor, '_weight_load_seconds', None)
+        self._runner_init_seconds = getattr(
+            self.model_executor, '_runner_init_seconds', None)
+        self._worker_total_seconds = getattr(
+            self.model_executor, '_worker_total_seconds', None)
+        logger.info("[LOGS] Executor setup complete (%.2fs)%s",
+                     self._executor_setup_seconds, _elapsed_since_start())
         logger.info(self.model_executor)
         if executor_fail_callback is not None:
             self.model_executor.register_failure_callback(executor_fail_callback)
@@ -218,6 +236,74 @@ class EngineCore:
         )
         self.async_scheduling = vllm_config.scheduler_config.async_scheduling
 
+        # Log engine startup summary
+        self._engine_total_seconds = time.time() - engine_init_start
+        model_load = self._model_load_seconds
+        other_init = (self._engine_total_seconds
+                      - self._executor_setup_seconds
+                      - self._init_engine_time_seconds)
+        if model_load is not None:
+            executor_overhead = self._executor_setup_seconds - model_load
+            # Build model loading breakdown lines
+            ml_lines = ""
+            ml_args: list = []
+            dist_init = self._dist_init_seconds
+            weight_load = self._weight_load_seconds
+            runner_init = self._runner_init_seconds
+            worker_total = self._worker_total_seconds
+            if (dist_init is not None and weight_load is not None
+                    and worker_total is not None):
+                spawn_overhead = model_load - worker_total
+                ml_lines = (
+                    "║      device init:    %7.2fs       ║\n"
+                    "║      weights load:   %7.2fs       ║\n"
+                    "║      spawn overhead: %7.2fs       ║\n"
+                )
+                ml_args = [dist_init, weight_load, spawn_overhead]
+            logger.info(
+                "\n╔══════════════════════════════════════╗\n"
+                "║     Engine Startup Summary           ║\n"
+                "╠══════════════════════════════════════╣\n"
+                "║  Executor total:      %7.2fs       ║\n"
+                "║    (overhead):        %7.2fs       ║\n"
+                "║    (model loading):   %7.2fs       ║\n"
+                + ml_lines +
+                "║  KV cache init total: %7.2fs       ║\n"
+                "║    (alloc + warmup):  %7.2fs       ║\n"
+                "║  Other init:          %7.2fs       ║\n"
+                "║  ──────────────────────────────────   ║\n"
+                "║  Engine total:        %7.2fs       ║\n"
+                "╚══════════════════════════════════════╝%s",
+                self._executor_setup_seconds,
+                executor_overhead,
+                model_load,
+                *ml_args,
+                self._init_engine_time_seconds,
+                self._kv_cache_and_warmup_seconds,
+                other_init,
+                self._engine_total_seconds,
+                _elapsed_since_start(),
+            )
+        else:
+            logger.info(
+                "\n╔══════════════════════════════════════╗\n"
+                "║     Engine Startup Summary           ║\n"
+                "╠══════════════════════════════════════╣\n"
+                "║  Executor total:      %7.2fs       ║\n"
+                "║  KV cache init total: %7.2fs       ║\n"
+                "║    (alloc + warmup):  %7.2fs       ║\n"
+                "║  Other init:          %7.2fs       ║\n"
+                "║  ──────────────────────────────────   ║\n"
+                "║  Engine total:        %7.2fs       ║\n"
+                "╚══════════════════════════════════════╝%s",
+                self._executor_setup_seconds,
+                self._init_engine_time_seconds,
+                self._kv_cache_and_warmup_seconds,
+                other_init,
+                self._engine_total_seconds,
+                _elapsed_since_start(),
+            )
+
         # Mark the startup heap as static so that it's ignored by GC.
         # Reduces pause times of oldest generation collections.
         freeze_gc_heap()
@@ -304,9 +390,14 @@ class EngineCore:
         num_cpu_blocks = 0
 
         # Initialize kv cache and warmup the execution
+        kv_alloc_start = time.time()
         self.model_executor.initialize_from_config(kv_cache_configs)
+        self._kv_cache_and_warmup_seconds = time.time() - kv_alloc_start
+        logger.info("[LOGS] KV cache alloc + warmup complete (%.2fs)%s",
+                     self._kv_cache_and_warmup_seconds, _elapsed_since_start())
 
         elapsed = time.time() - start
+        self._init_engine_time_seconds = elapsed
         logger.info_once(
             "init engine (profile, create kv cache, warmup model) took %.2f seconds",
             elapsed,
