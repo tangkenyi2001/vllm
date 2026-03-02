@@ -20,6 +20,21 @@ from vllm.config import (
 )
 
 logger = logging.getLogger(__name__)
+import time
+def _elapsed_since_start() -> str:
+    """Return seconds elapsed since VLLM_START_TIME env var was set.
+
+    Returns an empty string if the env var is not set (e.g. when the server
+    is started directly, not via std_server.py).
+    """
+    raw = os.environ.get("WORKER_CONTROLLER_START_TIME")
+    if raw is None:
+        return ""
+    try:
+        return f" [+{time.time() - float(raw):.5f}s since start]"
+    except ValueError:
+        return ""
+
 
 
 def _build_vllm_config_from_dict(config_dict: Dict[str, Any]) -> VllmConfig:
@@ -215,11 +230,6 @@ def create_engine(request: EngineCreateRequest):
         raise HTTPException(status_code=503, detail="WorkerController not initialized")
 
     try:
-        request_start = time.time()
-        config_build_time = 0.0
-        controller_create_time = 0.0
-        metadata_fetch_time = 0.0
-
         # Check if using advanced format with vllm_config dict
         if request.vllm_config is not None:
             config_start = time.time()
@@ -229,8 +239,6 @@ def create_engine(request: EngineCreateRequest):
 
             # Build VllmConfig from nested dict structure
             vllm_config = _build_vllm_config_from_dict(request.vllm_config)
-            model_name = vllm_config.model_config.model
-            config_build_time = time.time() - config_start
 
         else:
             # Simple format - build from flat parameters
@@ -243,7 +251,6 @@ def create_engine(request: EngineCreateRequest):
             logger.info(
                 f"Creating engine {request.engine_uuid} with model {request.model}"
             )
-            config_start = time.time()
 
             model_config = ModelConfig(
                 model=request.model,
@@ -273,7 +280,7 @@ def create_engine(request: EngineCreateRequest):
             observability_config = ObservabilityConfig()
             compilation_config = CompilationConfig()
             device_config = DeviceConfig()
-
+            logger.info("[LOGS] Creating vllmconfig%s", _elapsed_since_start())
             vllm_config = VllmConfig(
                 model_config=model_config,
                 cache_config=cache_config,
@@ -282,44 +289,18 @@ def create_engine(request: EngineCreateRequest):
                 compilation_config=compilation_config,
                 device_config=device_config,
             )
-            model_name = request.model
-            config_build_time = time.time() - config_start
+            logger.info("[LOGS]  vllmconfig created%s", _elapsed_since_start())
 
-        # Create engine: this assigns workers, loads model, calculates blocks,
-        # and spawns API server with RemoteExecutor
-        create_start = time.time()
         proc = worker_controller.create(vllm_config, request.engine_uuid)
-        controller_create_time = time.time() - create_start
 
-        # Get assigned resources
-        metadata_start = time.time()
         assigned_ranks = worker_controller.resource_allocator.get_ranks_by_uuid(
             request.engine_uuid
         )
         port = worker_controller.resource_allocator.get_port_by_uuid(
             request.engine_uuid
         )
-        metadata_fetch_time = time.time() - metadata_start
 
         engine_info = worker_controller.executor.engines.get(request.engine_uuid, {})
-        create_timings = engine_info.get("create_timings")
-
-        logger.info(
-            "create_engine request breakdown for %s: %s",
-            request.engine_uuid,
-            {
-                "config_build_time": round(config_build_time, 4),
-                "controller_create_time": round(controller_create_time, 4),
-                "metadata_fetch_time": round(metadata_fetch_time, 4),
-                "request_total_time": round(time.time() - request_start, 4),
-            },
-        )
-        if create_timings:
-            logger.info(
-                "controller create internals for %s: %s",
-                request.engine_uuid,
-                {k: round(v, 4) for k, v in create_timings.items()},
-            )
 
         logger.info(f"Engine {request.engine_uuid} created successfully on port {port}")
 
@@ -331,7 +312,6 @@ def create_engine(request: EngineCreateRequest):
             assigned_ranks=assigned_ranks,
             model=request.model,
             pid=proc.pid if proc else None,
-            create_timings=create_timings,
         )
 
     except Exception as e:

@@ -12,7 +12,6 @@ import secrets
 import signal
 import socket
 import tempfile
-import time
 import uuid
 from argparse import Namespace
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
@@ -135,6 +134,21 @@ ENDPOINT_LOAD_METRICS_FORMAT_HEADER_LABEL = "endpoint-load-metrics-format"
 
 _running_tasks: set[asyncio.Task] = set()
 
+import time
+def _elapsed_since_start() -> str:
+    """Return seconds elapsed since VLLM_START_TIME env var was set.
+
+    Returns an empty string if the env var is not set (e.g. when the server
+    is started directly, not via std_server.py).
+    """
+    raw = os.environ.get("VLLM_START_TIME")
+    if raw is None:
+        return ""
+    try:
+        return f" [+{time.time() - float(raw):.5f}s since start]"
+    except ValueError:
+        return ""
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -157,6 +171,7 @@ async def lifespan(app: FastAPI):
         # Reduces pause times of oldest generation collections.
         freeze_gc_heap()
         try:
+            logger.info("[LOGS] Server startup complete%s", _elapsed_since_start())
             yield
         finally:
             if task is not None:
@@ -174,6 +189,8 @@ async def build_async_engine_client(
     disable_frontend_multiprocessing: bool | None = None,
     client_config: dict[str, Any] | None = None,
 ) -> AsyncIterator[EngineClient]:
+    decorate_logs("Engine Client")
+    logger.info(f"[ LOGS] Building engine client | {_elapsed_since_start()}")
     if os.getenv("VLLM_WORKER_MULTIPROC_METHOD") == "forkserver":
         # The executor is expected to be mp.
         # Pre-import heavy modules in the forkserver process
@@ -183,20 +200,10 @@ async def build_async_engine_client(
         forkserver.ensure_running()
         logger.debug("Forkserver setup complete!")
 
+ 
     # Context manager to handle engine_client lifecycle
     # Ensures everything is shutdown and cleaned up on error/exit
     engine_args = AsyncEngineArgs.from_cli_args(args)
-
-    # Copy WorkerController specific args that might be filtered out
-    if hasattr(args, "request_queue"):
-        engine_args.request_queue = args.request_queue
-    if hasattr(args, "response_queue"):
-        engine_args.response_queue = args.response_queue
-    if hasattr(args, "engine_uuid"):
-        engine_args.engine_uuid = args.engine_uuid
-    if hasattr(args, "vllm_config"):
-        engine_args.vllm_config = args.vllm_config
-
     if client_config:
         engine_args._api_process_count = client_config.get("client_count", 1)
         engine_args._api_process_rank = client_config.get("client_index", 0)
@@ -229,16 +236,15 @@ async def build_async_engine_client_from_engine_args(
     Returns the Client or None if the creation failed.
     """
 
-    # Use passed vllm_config if available, otherwise create from engine_args
-    if hasattr(engine_args, "vllm_config") and engine_args.vllm_config is not None:
-        vllm_config = engine_args.vllm_config
-    else:
-        vllm_config = engine_args.create_engine_config(usage_context=usage_context)
+    # Create the EngineConfig (determines if we can use V1).
+    vllm_config = engine_args.create_engine_config(usage_context=usage_context)
 
     if disable_frontend_multiprocessing:
         logger.warning("V1 is enabled, but got --disable-frontend-multiprocessing.")
 
-    async_llm = None
+    from vllm.v1.engine.async_llm import AsyncLLM
+
+    async_llm: AsyncLLM | None = None
 
     # Don't mutate the input client_config
     client_config = dict(client_config) if client_config else {}
@@ -246,49 +252,22 @@ async def build_async_engine_client_from_engine_args(
     client_index = client_config.pop("client_index", 0)
 
     try:
-        # Check for WorkerController queues in args
-        if hasattr(engine_args, "request_queue") and hasattr(
-            engine_args, "response_queue"
-        ):
-            # Use in-process AsyncLLM to avoid subprocess overhead
-            print("Using IN-PROCESS EngineCore (avoiding subprocess overhead)")
-            logger.info("Using IN-PROCESS EngineCore (avoiding subprocess overhead)")
-            from vllm.worker_controller.engine.async_llm import (
-                AsyncLLM as InprocAsyncLLM,
-            )
-            from vllm.worker_controller.executor.remote_executor import RemoteExecutor
-
-            class RemoteExecutorFactory(RemoteExecutor):
-                def __init__(self, config):
-                    super().__init__(
-                        config, engine_args.request_queue, engine_args.response_queue
-                    )
-
-            async_llm = InprocAsyncLLM(
-                vllm_config=vllm_config,
-                executor_class=RemoteExecutorFactory,
-                log_stats=not engine_args.disable_log_stats,
-                usage_context=usage_context,
-                log_requests=engine_args.enable_log_requests,
-            )
-        else:
-            from vllm.v1.engine.async_llm import AsyncLLM
-
-            async_llm = AsyncLLM.from_vllm_config(
-                vllm_config=vllm_config,
-                usage_context=usage_context,
-                enable_log_requests=engine_args.enable_log_requests,
-                aggregate_engine_logging=engine_args.aggregate_engine_logging,
-                disable_log_stats=engine_args.disable_log_stats,
-                client_addresses=client_config,
-                client_count=client_count,
-                client_index=client_index,
-            )
+        logger.info("[LOGS] Creating AsyncLLM from vllm config%s", _elapsed_since_start())
+        async_llm = AsyncLLM.from_vllm_config(
+            vllm_config=vllm_config,
+            usage_context=usage_context,
+            enable_log_requests=engine_args.enable_log_requests,
+            aggregate_engine_logging=engine_args.aggregate_engine_logging,
+            disable_log_stats=engine_args.disable_log_stats,
+            client_addresses=client_config,
+            client_count=client_count,
+            client_index=client_index,
+        )
 
         # Don't keep the dummy data in memory
         assert async_llm is not None
         await async_llm.reset_mm_cache()
-
+        logger.info("[LOGS] AsyncLLM ready%s", _elapsed_since_start())
         yield async_llm
     finally:
         if async_llm:
@@ -410,120 +389,9 @@ async def health(raw_request: Request) -> Response:
     """Health check."""
     try:
         await engine_client(raw_request).check_health()
-
-        state = raw_request.app.state
-        if not hasattr(state, "startup_first_health_ok_time"):
-            state.startup_first_health_ok_time = time.time()
-
         return Response(status_code=200)
     except EngineDeadError:
         return Response(status_code=503)
-
-
-@router.get("/startup_timing")
-async def get_startup_timing(raw_request: Request):
-    """Expose startup milestone timings for diagnostics."""
-    state = raw_request.app.state
-
-    api_routes_ready_time = getattr(state, "startup_api_routes_ready_time", None)
-    first_health_ok_time = getattr(state, "startup_first_health_ok_time", None)
-
-    api_routes_to_first_health_s = None
-    if isinstance(api_routes_ready_time, (int, float)) and isinstance(
-        first_health_ok_time, (int, float)
-    ):
-        api_routes_to_first_health_s = max(
-            0.0, first_health_ok_time - api_routes_ready_time
-        )
-
-    return JSONResponse(
-        content={
-            "api_routes_ready_time": api_routes_ready_time,
-            "first_health_ok_time": first_health_ok_time,
-            "api_routes_to_first_health_s": api_routes_to_first_health_s,
-        }
-    )
-
-
-@router.get("/model_load_timings")
-async def get_model_load_timings(raw_request: Request):
-    """Get model loading timing breakdown from workers."""
-    client = engine_client(raw_request)
-    debug_info = {
-        "client_class": type(client).__name__,
-        "has_get_model_load_timings": hasattr(client, "get_model_load_timings"),
-        "has_get_init_engine_time_seconds": hasattr(
-            client, "get_init_engine_time_seconds"
-        ),
-    }
-
-    engine_core = getattr(client, "engine_core", None)
-    if engine_core is not None:
-        debug_info["engine_core_class"] = type(engine_core).__name__
-        model_executor = getattr(engine_core, "model_executor", None)
-        if model_executor is not None:
-            debug_info["model_executor_class"] = type(model_executor).__name__
-            has_timings_attr = hasattr(model_executor, "model_load_timings")
-            debug_info["model_executor_has_model_load_timings_attr"] = has_timings_attr
-            if has_timings_attr:
-                raw_timings = getattr(model_executor, "model_load_timings")
-                debug_info["model_executor_model_load_timings_type"] = type(raw_timings).__name__
-                if isinstance(raw_timings, list):
-                    debug_info["model_executor_model_load_timings_len"] = len(raw_timings)
-
-    init_engine_time_seconds = None
-    timings = None
-
-    if hasattr(client, "get_init_engine_time_seconds"):
-        init_engine_time_seconds = client.get_init_engine_time_seconds()
-    elif engine_core is not None and hasattr(engine_core, "get_init_engine_time_seconds"):
-        init_engine_time_seconds = engine_core.get_init_engine_time_seconds()
-
-    if hasattr(client, "get_model_load_timings"):
-        timings = client.get_model_load_timings()
-    elif engine_core is not None and hasattr(engine_core, "get_model_load_timings"):
-        timings = engine_core.get_model_load_timings()
-
-    if timings:
-        return JSONResponse(
-            content={
-                "worker_timings": timings,
-                "summary": {
-                    "avg_total_time": sum(t.get("total_time", 0) for t in timings)
-                    / len(timings),
-                    "avg_effective_model_load_time": sum(
-                        t.get(
-                            "effective_model_load_time",
-                            t.get("model_runner_init_time", 0)
-                            + t.get("weight_load_time", 0),
-                        )
-                        for t in timings
-                    )
-                    / len(timings),
-                    "avg_weight_load_time": sum(
-                        t.get("weight_load_time", 0) for t in timings
-                    )
-                    / len(timings),
-                    "avg_model_runner_init_time": sum(
-                        t.get("model_runner_init_time", 0) for t in timings
-                    )
-                    / len(timings),
-                    "remote_executor_load_model_rpc_time": timings[0].get(
-                        "remote_executor_load_model_rpc_time", 0
-                    ),
-                    "init_engine_time_seconds": init_engine_time_seconds,
-                },
-                "debug": debug_info,
-            }
-        )
-    return JSONResponse(
-        content={
-            "worker_timings": None,
-            "summary": {"init_engine_time_seconds": init_engine_time_seconds},
-            "message": "Timings not available",
-            "debug": debug_info,
-        }
-    )
 
 
 @router.get("/load")
@@ -2125,7 +1993,7 @@ def validate_api_server_args(args):
 def setup_server(args):
     """Validate API server args, set up signal handler, create socket
     ready to serve."""
-
+    logger.info("Server start%s", _elapsed_since_start())
     logger.info("vLLM API server version %s", VLLM_VERSION)
     log_non_default_args(args)
 
@@ -2191,7 +2059,6 @@ async def run_server_worker(
     log_config = load_log_config(args.log_config_file)
     if log_config is not None:
         uvicorn_kwargs["log_config"] = log_config
-
     async with build_async_engine_client(
         args,
         client_config=client_config,
@@ -2200,12 +2067,11 @@ async def run_server_worker(
         app = build_app(args)
 
         await init_app_state(engine_client, app.state, args)
-        app.state.startup_api_routes_ready_time = time.time()
-
         logger.info(
-            "Starting vLLM API server %d on %s",
+            "Starting vLLM API server %d on %s%s",
             engine_client.vllm_config.parallel_config._api_process_rank,
             listen_address,
+            _elapsed_since_start(),
         )
         shutdown_task = await serve_http(
             app,
@@ -2245,5 +2111,5 @@ if __name__ == "__main__":
     parser = make_arg_parser(parser)
     args = parser.parse_args()
     validate_parsed_serve_args(args)
-
+    os.environ["VLLM_START_TIME"] = str(time.time())
     uvloop.run(run_server(args))

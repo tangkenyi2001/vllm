@@ -15,11 +15,25 @@ from vllm.utils.argparse_utils import FlexibleArgumentParser
 from vllm.entrypoints.openai.cli_args import make_arg_parser
 
 from vllm.worker_controller.executor.proxy_executor import ProxyExecutor
-from vllm.worker_controller.entrypoint.api_server import run_server
+from vllm.worker_controller.entrypoint.worker_controller_api_server import run_server
 
 import uvloop
 
 logger = init_logger(__name__)
+import time
+def _elapsed_since_start() -> str:
+    """Return seconds elapsed since VLLM_START_TIME env var was set.
+
+    Returns an empty string if the env var is not set (e.g. when the server
+    is started directly, not via std_server.py).
+    """
+    raw = os.environ.get("WORKER_CONTROLLER_START_TIME")
+    if raw is None:
+        return ""
+    try:
+        return f" [+{time.time() - float(raw):.5f}s since start]"
+    except ValueError:
+        return ""
 
 
 def run_api_server(request_queue, response_queue, engine_uuid, vllm_config, port):
@@ -31,15 +45,6 @@ def run_api_server(request_queue, response_queue, engine_uuid, vllm_config, port
         os.dup2(devnull_fd, 1)
         os.dup2(devnull_fd, 2)
         os.close(devnull_fd)
-
-    try:
-        multiprocessing.set_start_method("forkserver", force=True)
-        multiprocessing.set_forkserver_preload(
-            ["vllm.worker_controller.entrypoint.api_server"]
-        )
-    except RuntimeError:
-        # Context already set
-        pass
 
     # Create default args
     parser = FlexibleArgumentParser()
@@ -61,6 +66,8 @@ def run_api_server(request_queue, response_queue, engine_uuid, vllm_config, port
     # Disable frontend multiprocessing in the child process as it is managed by Controller
     args.disable_frontend_multiprocessing = True
 
+    # Anchor elapsed-time logging to when the API server event loop starts.
+    os.environ["WORKER_CONTROLLER_START_TIME"] = str(time.time())
     uvloop.run(run_server(args))
 
 
@@ -166,9 +173,7 @@ class WorkerController:
             vllm_config: Configuration for the model/engine
             engine_uuid: Unique identifier for this API server instance
         """
-        logger.info(f"WorkerController.create called for {engine_uuid}")
-        create_start = time.time()
-        timing_breakdown: dict[str, float] = {}
+        logger.info(f"WorkerController.create called for {engine_uuid},{_elapsed_since_start()}")
 
         # 1. Allocate resources
         step_start = time.time()
@@ -181,52 +186,35 @@ class WorkerController:
             self.resource_allocator.next_port += 1
         else:
             dist_port = None
-        timing_breakdown["resource_allocation_time"] = time.time() - step_start
+
 
         logger.info(
-            f"Assigned ranks {assigned_ranks}, port {port} to engine {engine_uuid}"
+            f"Assigned ranks {assigned_ranks}, port {port} to engine {engine_uuid}, {_elapsed_since_start()} "
         )
 
         # 2. Create queues for communication
-        step_start = time.time()
         ctx = multiprocessing.get_context("forkserver")
         request_queue = ctx.Queue()
         response_queue = ctx.Queue()
-        timing_breakdown["ipc_queue_setup_time"] = time.time() - step_start
 
         # 3. Register engine with ProxyExecutor
-        step_start = time.time()
-        logger.info(f"Adding engine {engine_uuid} to ProxyExecutor")
+        logger.info(f"Adding engine {engine_uuid} to ProxyExecutor, {_elapsed_since_start()}")
         self.executor.add_engine(
             engine_uuid, assigned_ranks, request_queue, response_queue, dist_port
         )
-        timing_breakdown["proxy_register_time"] = time.time() - step_start
 
         # 4. Spawn API Server process
         step_start = time.time()
-        logger.info(f"Spawning APIServer process for {engine_uuid}")
+        logger.info(f"Spawning APIServer process for {engine_uuid},{_elapsed_since_start()}")
         proc = ctx.Process(
             target=run_api_server,
             args=(request_queue, response_queue, engine_uuid, vllm_config, port),
             name=f"APIServer-{engine_uuid}",
         )
         proc.start()
-        timing_breakdown["api_process_spawn_time"] = time.time() - step_start
-        timing_breakdown["create_call_total_time"] = time.time() - create_start
-        logger.info(f"APIServer process started with PID {proc.pid}")
-        logger.info(
-            "WorkerController.create breakdown for %s: %s",
-            engine_uuid,
-            {
-                k: round(v, 4)
-                for k, v in timing_breakdown.items()
-            },
-        )
 
         if engine_uuid in self.executor.engines:
             self.executor.engines[engine_uuid]["proc"] = proc
-            self.executor.engines[engine_uuid]["create_timings"] = timing_breakdown
-
         return proc
 
     def delete(self, engine_uuid: str):

@@ -35,13 +35,13 @@ def measure_standard_vllm_cold_start(
     cmd = [
         sys.executable,
         "-m",
-        "vllm.entrypoints.openai.api_server",
+        "vllm.worker_controller.entrypoint.standard_api_server",
         "--model",
         model_name,
         "--port",
         str(port),
         "--gpu-memory-utilization",
-        "0.3",
+        "0.8",
         "--enforce-eager",
         "--tensor-parallel-size",
         "2"
@@ -115,7 +115,7 @@ def measure_standard_vllm_cold_start(
 
 
 def main():
-    measure_standard_vllm_cold_start("facebook/opt-125m")
+    measure_standard_vllm_cold_start("Qwen/Qwen3-8B")
 
 
 if __name__ == "__main__":

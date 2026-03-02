@@ -72,6 +72,21 @@ HANDSHAKE_TIMEOUT_MINS = 5
 
 _R = TypeVar("_R")  # Return type for collective_rpc
 
+import time
+def _elapsed_since_start() -> str:
+    """Return seconds elapsed since VLLM_START_TIME env var was set.
+
+    Returns an empty string if the env var is not set (e.g. when the server
+    is started directly, not via std_server.py).
+    """
+    raw = os.environ.get("VLLM_START_TIME")
+    if raw is None:
+        return ""
+    try:
+        return f" [+{time.time() - float(raw):.2f}s since start]"
+    except ValueError:
+        return ""
+
 
 class EngineCore:
     """Inner loop of vLLM's Engine."""
@@ -210,7 +225,7 @@ class EngineCore:
         self, vllm_config: VllmConfig
     ) -> tuple[int, int, KVCacheConfig]:
         start = time.time()
-
+        logger.info(f"[LOGS] Initializing KV Cache | {_elapsed_since_start()}")
         env_mem_str = os.environ.get("VLLM_KVC_MEM_GB")
         GiB = 1024**3
 

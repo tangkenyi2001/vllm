@@ -26,7 +26,7 @@ def measure_worker_controller_cold_start(
     env = os.environ.copy()
     # Pass the wall-clock start time so all child processes (api_server,
     # EngineCore, etc.) can log elapsed time relative to this anchor.
-    env["VLLM_START_TIME"] = str(total_start)
+    env["WORKER_CONTROLLER_START_TIME"] = str(total_start)
 
     repo_root = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "..", "..")
@@ -35,7 +35,7 @@ def measure_worker_controller_cold_start(
     cmd = [
         sys.executable,
         "-m",
-        "vllm.worker_controller.worker_controller_server",
+        "vllm.worker_controller.entrypoint.worker_controller_server",
         "--port",
         str(port),
         "--gpu-memory-utilization",

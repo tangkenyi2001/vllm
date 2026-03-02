@@ -15,6 +15,22 @@ import vllm.envs as envs
 
 logger = init_logger(__name__)
 
+import time
+import os
+def _elapsed_since_start() -> str:
+    """Return seconds elapsed since VLLM_START_TIME env var was set.
+
+    Returns an empty string if the env var is not set (e.g. when the server
+    is started directly, not via std_server.py).
+    """
+    raw = os.environ.get("WORKER_CONTROLLER_START_TIME")
+    if raw is None:
+        return ""
+    try:
+        return f" [+{time.time() - float(raw):.5f}s since start]"
+    except ValueError:
+        return ""
+
 
 class RemoteExecutor(Executor):
     """
@@ -26,6 +42,7 @@ class RemoteExecutor(Executor):
     """
 
     def __init__(self, vllm_config: VllmConfig, request_queue, response_queue):
+        logger.info("[LOGS] Creating Remote Executor %s", _elapsed_since_start())
         self.request_queue = request_queue
         self.response_queue = response_queue
         # Thread pool for non-blocking response handling (reuse threads)
@@ -37,29 +54,8 @@ class RemoteExecutor(Executor):
     def _init_executor(self) -> None:
         # Trigger model loading on the assigned workers
         # Use None timeout as loading can take time
-        load_start = time.time()
-        load_result = self.collective_rpc(
+        self.collective_rpc(
             "load_model", args=(self.vllm_config,), timeout=None
-        )
-        load_elapsed = time.time() - load_start
-        self.load_model_rpc_time_seconds = load_elapsed
-
-        # Store timing information from workers
-        if isinstance(load_result, list):
-            self.model_load_timings = load_result
-        elif isinstance(load_result, dict):
-            self.model_load_timings = [load_result]
-        else:
-            self.model_load_timings = None
-
-        if self.model_load_timings:
-            for timing in self.model_load_timings:
-                if isinstance(timing, dict):
-                    timing["remote_executor_load_model_rpc_time"] = load_elapsed
-
-        logger.warning(
-            "RemoteExecutor load_model RPC completed in %.3fs",
-            load_elapsed,
         )
         self.output_rank = self._get_output_rank()
 
