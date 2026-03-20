@@ -254,12 +254,24 @@ class EngineCore:
             if (dist_init is not None and weight_load is not None
                     and worker_total is not None):
                 spawn_overhead = model_load - worker_total
-                ml_lines = (
-                    "║      device init:    %7.2fs       ║\n"
-                    "║      weights load:   %7.2fs       ║\n"
-                    "║      spawn overhead: %7.2fs       ║\n"
-                )
-                ml_args = [dist_init, weight_load, spawn_overhead]
+                if runner_init is not None:
+                    worker_other = worker_total - dist_init - weight_load - runner_init
+                    ml_lines = (
+                        "║      dist init:      %7.2fs       ║\n"
+                        "║      weights load:   %7.2fs       ║\n"
+                        "║      runner init:    %7.2fs       ║\n"
+                        "║      config+cleanup: %7.2fs       ║\n"
+                        "║      spawn overhead: %7.2fs       ║\n"
+                    )
+                    ml_args = [dist_init, weight_load, runner_init,
+                               worker_other, spawn_overhead]
+                else:
+                    ml_lines = (
+                        "║      device init:    %7.2fs       ║\n"
+                        "║      weights load:   %7.2fs       ║\n"
+                        "║      spawn overhead: %7.2fs       ║\n"
+                    )
+                    ml_args = [dist_init, weight_load, spawn_overhead]
             logger.info(
                 "\n╔══════════════════════════════════════╗\n"
                 "║     Engine Startup Summary           ║\n"

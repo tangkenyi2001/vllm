@@ -3258,6 +3258,8 @@ class DummyModelConfig:
     @property
     def is_encoder_decoder(self) -> bool:
         """Extract the HF encoder/decoder model flag."""
+        if not hasattr(self, "hf_config"):
+            return False
         return is_encoder_decoder(self.hf_config)
 
     @property

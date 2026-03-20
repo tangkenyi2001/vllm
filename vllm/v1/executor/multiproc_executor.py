@@ -228,9 +228,12 @@ class MultiprocExecutor(Executor):
             # Propagate sub-timings from rank-0 worker
             rank0_timings = getattr(WorkerProc, '_rank0_timings', None)
             if rank0_timings:
-                self._dist_init_seconds = rank0_timings.get('device_init')
+                # Use fine-grained dist_init/runner_init if available (set by
+                # Worker.init_device()); fall back to full device_init otherwise.
+                self._dist_init_seconds = (rank0_timings.get('dist_init')
+                                           or rank0_timings.get('device_init'))
                 self._weight_load_seconds = rank0_timings.get('weight_load')
-                self._runner_init_seconds = 0.0  # included in device_init for multiproc
+                self._runner_init_seconds = rank0_timings.get('runner_init', 0.0)
                 self._worker_total_seconds = rank0_timings.get('worker_total')
                 WorkerProc._rank0_timings = None  # clean up
             logger.info(
@@ -587,6 +590,9 @@ class WorkerProc:
         device_init_start = time.time()
         self.worker.init_device()
         self._device_init_seconds = time.time() - device_init_start
+        # Copy fine-grained sub-timings from the worker if available.
+        self._dist_init_seconds = getattr(self.worker, '_dist_init_seconds', None)
+        self._runner_init_seconds = getattr(self.worker, '_runner_init_seconds', None)
 
         # Set process title and log prefix
         self.setup_proc_title_and_log_prefix(
@@ -781,6 +787,8 @@ class WorkerProc:
                         "device_init": getattr(worker, '_device_init_seconds', None),
                         "weight_load": getattr(worker, '_weight_load_seconds', None),
                         "worker_total": getattr(worker, '_worker_total_seconds', None),
+                        "dist_init": getattr(worker, '_dist_init_seconds', None),
+                        "runner_init": getattr(worker, '_runner_init_seconds', None),
                     },
                 }
             )

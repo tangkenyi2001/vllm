@@ -238,6 +238,7 @@ class Worker(WorkerBase):
             # memory snapshot
             # This ensures NCCL buffers are allocated before we measure
             # available memory
+            _dist_init_start = time.time()
             init_worker_distributed_environment(
                 self.vllm_config,
                 self.rank,
@@ -245,6 +246,7 @@ class Worker(WorkerBase):
                 self.local_rank,
                 current_platform.dist_backend,
             )
+            self._dist_init_seconds = time.time() - _dist_init_start
 
             # Set random seed.
             set_random_seed(self.model_config.seed)
@@ -274,9 +276,11 @@ class Worker(WorkerBase):
             raise RuntimeError(f"Not support device type: {self.device_config.device}")
 
         # Construct the model runner
+        _runner_init_start = time.time()
         self.model_runner: GPUModelRunner = GPUModelRunner(
             self.vllm_config, self.device
         )
+        self._runner_init_seconds = time.time() - _runner_init_start
 
         if self.rank == 0:
             # If usage stat is enabled, collect relevant info.
@@ -310,9 +314,10 @@ class Worker(WorkerBase):
         """
         GiB = lambda b: b / GiB_bytes
         if kv_cache_memory_bytes := self.cache_config.kv_cache_memory_bytes:
-            # still need a profile run which compiles the model for
-            # max_num_batched_tokens
-            self.model_runner.profile_run()
+            # Skip profile_run when enforce_eager is set — no CUDA graphs to
+            # compile, so the dummy forward pass is unnecessary.
+            if not self.model_config.enforce_eager:
+                self.model_runner.profile_run()
 
             msg = (
                 f"Initial free memory {GiB(self.init_snapshot.free_memory):.2f} "
@@ -421,6 +426,10 @@ class Worker(WorkerBase):
             self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def compile_or_warm_up_model(self) -> None:
+        import os                                                                                                                    
+        if os.environ.get("VLLM_SKIP_KERNEL_WARMUP", "0") == "1":                                                                      
+            logger.info("Skipping compile_or_warm_up_model (VLLM_SKIP_KERNEL_WARMUP=1)")                                             
+            return
         # warm up sizes that are not in cudagraph capture sizes,
         # but users still want to compile for better performance,
         # e.g. for the max-num-batched token size in chunked prefill.

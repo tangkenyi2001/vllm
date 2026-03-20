@@ -17,6 +17,7 @@ from vllm.config import (
     ObservabilityConfig,
     CompilationConfig,
     DeviceConfig,
+    LoadConfig,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,7 @@ def _build_vllm_config_from_dict(config_dict: Dict[str, Any]) -> VllmConfig:
     cache_config_dict = config_dict.get("cache_config", {})
     parallel_config_dict = config_dict.get("parallel_config", {})
     scheduler_config_dict = config_dict.get("scheduler_config", {})
+    load_config_dict = config_dict.get("load_config", {})
 
     # Ensure worker_cls is set for parallel_config
     if "worker_cls" not in parallel_config_dict:
@@ -74,6 +76,7 @@ def _build_vllm_config_from_dict(config_dict: Dict[str, Any]) -> VllmConfig:
     observability_config = ObservabilityConfig()
     compilation_config = CompilationConfig()
     device_config = DeviceConfig()
+    load_config = LoadConfig(**load_config_dict)
 
     # Build VllmConfig
     vllm_config = VllmConfig(
@@ -83,6 +86,7 @@ def _build_vllm_config_from_dict(config_dict: Dict[str, Any]) -> VllmConfig:
         observability_config=observability_config,
         compilation_config=compilation_config,
         device_config=device_config,
+        load_config=load_config,
     )
 
     return vllm_config
@@ -110,6 +114,9 @@ class EngineCreateRequest(BaseModel):
     pipeline_parallel_size: int = 1
     seed: int = 0
     enforce_eager: bool = False
+    num_gpu_blocks_override: Optional[int] = 1
+
+    load_format: str = "auto"
 
     # Advanced format: full vllm_config dict (optional)
     vllm_config: Optional[Dict[str, Any]] = None
@@ -262,6 +269,7 @@ def create_engine(request: EngineCreateRequest):
                 block_size=request.block_size,
                 gpu_memory_utilization=request.gpu_memory_utilization,
                 swap_space=request.swap_space,
+                num_gpu_blocks_override=request.num_gpu_blocks_override,
             )
 
             # Calculate world_size from parallel config
@@ -277,6 +285,7 @@ def create_engine(request: EngineCreateRequest):
             observability_config = ObservabilityConfig()
             compilation_config = CompilationConfig()
             device_config = DeviceConfig()
+            load_config = LoadConfig(load_format=request.load_format)
             logger.info("[LOGS] Creating vllmconfig%s", _elapsed_since_start())
             vllm_config = VllmConfig(
                 model_config=model_config,
@@ -285,6 +294,7 @@ def create_engine(request: EngineCreateRequest):
                 observability_config=observability_config,
                 compilation_config=compilation_config,
                 device_config=device_config,
+                load_config=load_config,
             )
             logger.info("[LOGS]  vllmconfig created%s", _elapsed_since_start())
 
@@ -524,6 +534,8 @@ def main():
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    os.environ.setdefault("HF_HOME", "/dev/shm/models")
+
     # Attach the configured lifespan to the app before serving
     app.router.lifespan_context = make_lifespan(
         tensor_parallel_size=args.tensor_parallel_size,
@@ -535,6 +547,7 @@ def main():
     )
 
     logger.info(f"Starting Worker Controller API on {args.host}:{args.port}")
+    logger.info(f"HF_HOME={os.environ['HF_HOME']}")
     logger.info(f"API docs will be available at http://localhost:{args.port}/docs")
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

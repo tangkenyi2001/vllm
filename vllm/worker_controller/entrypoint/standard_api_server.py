@@ -2111,5 +2111,5 @@ if __name__ == "__main__":
     parser = make_arg_parser(parser)
     args = parser.parse_args()
     validate_parsed_serve_args(args)
-    os.environ["VLLM_START_TIME"] = str(time.time())
+    os.environ.setdefault("VLLM_START_TIME", str(time.time()))
     uvloop.run(run_server(args))

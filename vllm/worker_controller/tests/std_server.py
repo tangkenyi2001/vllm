@@ -1,3 +1,5 @@
+
+
 import os
 import time
 import sys
@@ -12,6 +14,9 @@ def measure_standard_vllm_cold_start(
     port: int = 8000,
     result_label: str | None = None,
     timeout: int = 300,
+    kv_cache_memory_bytes: int | None = None,
+    use_fixed_kv_cache_memory: bool = False,
+    load_format: str = "auto",
 ):
     """
     Measure cold start time using standard vLLM API server (vllm serve).
@@ -24,13 +29,19 @@ def measure_standard_vllm_cold_start(
     total_start = time.time()
 
     env = os.environ.copy()
+    env["HF_HOME"] = "/dev/shm/models"
     # Pass the wall-clock start time so all child processes (api_server,
     # EngineCore, etc.) can log elapsed time relative to this anchor.
     env["VLLM_START_TIME"] = str(total_start)
+    # Skip kernel warmup (FlashInfer autotune on Hopper, deep GEMM, etc.)
+    # to measure pure model-loading startup time without warmup overhead.
+    env.setdefault("VLLM_SKIP_KERNEL_WARMUP", "1")
 
     repo_root = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "..", "..")
     )
+
+    tensor_parallel_size = 2
 
     cmd = [
         sys.executable,
@@ -44,10 +55,34 @@ def measure_standard_vllm_cold_start(
         "0.8",
         "--enforce-eager",
         "--tensor-parallel-size",
-        "2"
+        str(tensor_parallel_size),
+        "--load-format",
+        load_format,
+        "--num-gpu-blocks-override",
+        "1",
     ]
 
+    if use_fixed_kv_cache_memory and kv_cache_memory_bytes is None:
+        kv_cache_memory_bytes = 16 * 1024**3
+
+    if kv_cache_memory_bytes is not None and "VLLM_KVC_MEM_GB" not in env:
+        kv_cache_memory_gib = kv_cache_memory_bytes / (1024**3)
+        env["VLLM_KVC_MEM_GB"] = ",".join(
+            [f"{kv_cache_memory_gib:g}"] * tensor_parallel_size)
+
+    if kv_cache_memory_bytes is not None:
+        cmd.extend([
+            "--kv-cache-memory-bytes",
+            str(kv_cache_memory_bytes),
+        ])
+
     print(f"[std_server] Starting vLLM API server for model '{model_name}' on port {port}...")
+    print(f"[std_server] HF_HOME={env['HF_HOME']}")
+    print(f"[std_server] load_format={load_format}")
+    if "VLLM_KVC_MEM_GB" in env:
+        print(f"[std_server] VLLM_KVC_MEM_GB={env['VLLM_KVC_MEM_GB']}")
+    if kv_cache_memory_bytes is not None:
+        print(f"[std_server] KV cache memory override={kv_cache_memory_bytes} bytes")
     print(f"[std_server] Command: {' '.join(cmd)}")
 
     proc = subprocess.Popen(
@@ -115,7 +150,11 @@ def measure_standard_vllm_cold_start(
 
 
 def main():
-    measure_standard_vllm_cold_start("Qwen/Qwen3-8B")
+    measure_standard_vllm_cold_start(
+        "Qwen/Qwen3-8B",
+        use_fixed_kv_cache_memory=True,
+        load_format="fastsafetensors",
+    )
 
 
 if __name__ == "__main__":
