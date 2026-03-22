@@ -1,7 +1,5 @@
-# Worker Controller Extension Report (MLSys-Focused)
+# Worker Controller README
 
-
-~/.cache/huggingface/hub
 ## Abstract
 
 This document describes the `vllm.worker_controller` subsystem as an extension to upstream vLLM V1. The core design objective is to decouple worker process lifecycle from model-engine lifecycle. Instead of constructing workers and loading models in the same startup path, Worker Controller prewarms GPU workers with dummy configuration and binds them to concrete engines at runtime. This shifts startup overhead out of the online critical path, enables worker reuse across engine instances, and introduces explicit engine-to-worker IPC routing semantics.
@@ -359,188 +357,95 @@ The implementation includes timing and startup instrumentation that is directly 
 3. **Control-plane vs dataplane gains:** design primarily optimizes startup/control-plane latency; steady-state token throughput may change less.
 4. **Single-node assumption in many deployments:** current behavior is most directly evaluated in single-node multiprocess settings.
 
-## 8. Reproducibility Checklist (for paper appendix)
+## 8. Setup and Running Scripts
 
-- Report exact commit hash.
-- Fix GPU model, driver, CUDA, and PyTorch versions.
-- Report TP/PP configuration and number of visible GPUs.
-- Distinguish:
-  - first engine creation after controller boot,
-  - subsequent engine creations with reused workers.
-- Report p50/p95 for each startup stage and end-to-end startup.
-- Include at least one small and one medium/large model.
+### 8.1 Installation
 
-## 9. Primary Artifact Index
+Clone the repo and install in editable mode using `uv`:
 
-- `worker_controller.py`
-- `config/model.py` (`DummyModelConfig`)
-- `config/vllm.py` (`DummyVllmConfig`)
-- `executor/proxy_executor.py`
-- `executor/remote_executor.py`
-- `worker/gpu_worker.py`
-- `entrypoint/worker_controller_api_server.py`
-- `engine/async_llm.py`
-- `engine/core.py`
-- `COLD_START_FINDINGS.md`
-
-## 10. Appendix: Publication-Ready Pseudo-code
-
-This section provides algorithmic pseudo-code intended for direct inclusion in a paper appendix.
-
-### Notation
-
-- `R`: set of all worker ranks.
-- `Free(r)`: rank `r` is unassigned.
-- `E`: mapping `engine_uuid -> {ranks, request_queue, response_queue, proc, port}`.
-- `Assign(num, uuid)`: allocator primitive returning `num` free ranks and a serving port.
-- `Broadcast(ranks, method, args, kwargs)`: rank-filtered RPC enqueue to worker transport.
-- `Collect(ranks)`: gather responses from target ranks.
-
-### Algorithm 1: `CreateEngine`
-
-```text
-Algorithm 1 CreateEngine(vllm_config, engine_uuid)
-Input:
-  vllm_config: concrete model/runtime configuration
-  engine_uuid: unique identifier for the requested engine
-State:
-  resource_allocator, executor (ProxyExecutor), E
-Output:
-  proc: API server process handle
-
-1:  num_gpus ← vllm_config.parallel_config.world_size
-2:  (assigned_ranks, port) ← Assign(num_gpus, engine_uuid)
-3:  if num_gpus > 1 then
-4:      dist_port ← resource_allocator.next_port
-5:      resource_allocator.next_port ← resource_allocator.next_port + 1
-6:  else
-7:      dist_port ← None
-8:  end if
-9:
-10: ctx ← multiprocessing.get_context("forkserver")
-11: request_queue ← ctx.Queue()
-12: response_queue ← ctx.Queue()
-13:
-14: executor.add_engine(
-15:      engine_uuid,
-16:      assigned_ranks,
-17:      request_queue,
-18:      response_queue,
-19:      dist_port)
-20:
-21: proc ← ctx.Process(
-22:      target=run_api_server,
-23:      args=(request_queue, response_queue, engine_uuid, vllm_config, port),
-24:      name=f"APIServer-{engine_uuid}")
-25: proc.start()
-26:
-27: E[engine_uuid] ← {
-28:      ranks: assigned_ranks,
-29:      request_queue: request_queue,
-30:      response_queue: response_queue,
-31:      proc: proc,
-32:      port: port
-33: }
-34: return proc
+```bash
+git clone <repo-url>
+cd vllm
+uv pip install -e .
 ```
 
-**Safety invariants:**
+If you don't have `uv`, install it first:
 
-- Rank exclusivity: a rank is assigned to at most one live engine (`∀r ∈ R, |owners(r)| ≤ 1`).
-- Queue isolation: each engine has private request/response queues.
-
-### Algorithm 2: `RouteRPC` (ProxyExecutor main loop)
-
-```text
-Algorithm 2 RouteRPC()
-State:
-  E: engine map, running: bool
-  response_mqs: per-rank response channels
-Input per engine:
-  request_queue items of form (method, args, kwargs)
-
-1: while running do
-2:     had_work ← false
-3:     for each (engine_uuid, engine_state) in snapshot(E) do
-4:         try
-5:             req ← engine_state.request_queue.get_nowait()
-6:             (method, args, kwargs) ← req
-7:             target_ranks ← engine_state.ranks
-8:
-9:             wrapped ← partial(check_rank_and_execute, target_ranks, method)
-10:            Broadcast(target_ranks, wrapped, args, kwargs)
-11:
-12:            responses ← []
-13:            for each rank in target_ranks do
-14:                (status, result) ← response_mqs[rank].dequeue(timeout=120)
-15:                if status ≠ SUCCESS then
-16:                    result ← Exception("Worker failed or timed out")
-17:                end if
-18:                append(responses, result)
-19:            end for
-20:
-21:            engine_state.response_queue.put(responses)
-22:            had_work ← true
-23:         catch EmptyQueue
-24:            continue
-25:         catch Exception as err
-26:            log_error(engine_uuid, err)
-27:         end try
-28:     end for
-29:
-30:     if had_work = false then
-31:         sleep(100 microseconds)
-32:     end if
-33: end while
+```bash
+pip install uv
 ```
 
-**Liveness note:** adaptive sleeping avoids busy-spin under low load while preserving low-latency polling under active load.
+### 8.2 Environment variables
 
-### Algorithm 3: `DeleteEngine`
+Most scripts expect the following environment variables:
 
-```text
-Algorithm 3 DeleteEngine(engine_uuid)
-Input:
-  engine_uuid
-State:
-  E, executor, resource_allocator
-Output:
-  success/failure
+| Variable | Description | Example |
+|---|---|---|
+| `HF_HOME` | Hugging Face cache directory | `/dev/shm/models` |
+| `VLLM_SKIP_KERNEL_WARMUP` | Skip kernel warmup for faster cold start benchmarks | `1` |
+| `VLLM_KVC_MEM_GB` | KV cache memory cap per GPU (comma-separated) | `16,16` |
+| `HUGGING_FACE_HUB_TOKEN` | HF token for gated models (optional) | |
 
-1: if engine_uuid ∈ E then
-2:     proc ← E[engine_uuid].proc
-3:     if proc ≠ None and proc.is_alive() then
-4:         proc.terminate()
-5:         proc.join(timeout=5)
-6:         if proc.is_alive() then
-7:             proc.kill()
-8:         end if
-9:     end if
-10: end if
-11:
-12: executor.delete_engine(engine_uuid)
-13:   // internally broadcasts unload_model to assigned ranks
-14:   // drains rank responses to avoid stale queue state
-15:
-16: resource_allocator.release_by_uuid(engine_uuid)
-17: remove E[engine_uuid] if present
-18: return success
+### 8.3 Running servers locally
+
+**Standard vLLM server:**
+
+```bash
+bash vllm/worker_controller/scripts/run_std_server.sh
 ```
 
-**Postconditions:**
+This starts the standard vLLM API server on port 8000 and logs to `vllm/worker_controller/logs/std_server.log`.
 
-- Workers previously assigned to `engine_uuid` are returned to free pool.
-- No active API process remains for `engine_uuid`.
-- Model state is unloaded on previously assigned ranks (best-effort with timeout handling).
+**Worker Controller server:**
 
-### Complexity discussion (control-plane)
+```bash
+bash vllm/worker_controller/scripts/run_worker_controller_server.sh
+```
 
-- `CreateEngine`: $O(|R|)$ worst-case allocation scan + process spawn overhead.
-- `RouteRPC` per request: $O(k)$ where $k$ is number of assigned ranks for the engine.
-- `DeleteEngine`: $O(k)$ for unload + response drain, plus process termination overhead.
+This starts the Worker Controller server on port 8000, sets `VLLM_KVC_MEM_GB=16,16`, and logs to `vllm/worker_controller/logs/workerlogs.log`.
 
-### Mapping to concrete implementation
+### 8.4 Running benchmarks
 
-- Algorithm 1 maps to `WorkerController.create(...)` in `worker_controller.py`.
-- Algorithm 2 maps to `ProxyExecutor.run_loop(...)` and helper methods in `executor/proxy_executor.py`.
-- Algorithm 3 maps to `WorkerController.delete(...)` plus `ProxyExecutor.delete_engine(...)`.
+**Cold start benchmark (Python — recommended):**
+
+```bash
+# Full benchmark: 1 warmup + 30 measured runs for both server types
+bash vllm/worker_controller/scripts/benchmark_cold_start.sh
+
+# Customize runs and server type
+python vllm/worker_controller/scripts/benchmark_cold_start.py -n 10 --warmup 1
+python vllm/worker_controller/scripts/benchmark_cold_start.py -n 5 --only std
+python vllm/worker_controller/scripts/benchmark_cold_start.py -n 5 --only wc
+```
+
+Results are saved to `vllm/worker_controller/logs/benchmark_results.json`.
+
+**Cold start benchmark (shell — alternative):**
+
+```bash
+bash vllm/worker_controller/scripts/run_benchmark.sh
+```
+
+Runs 10 iterations each of the standard server and Worker Controller server, watches for `Engine total` in output, and prints a summary.
+
+**PCIe bandwidth test:**
+
+```bash
+python vllm/worker_controller/scripts/benchmark_pcie.py
+```
+
+Measures host-to-device and device-to-host PCIe bandwidth (1 GB transfers with pinned memory) for all available GPUs.
+
+### 8.5 Parsing benchmark logs
+
+```bash
+# Parse a single log file
+python vllm/worker_controller/scripts/parse_logs.py vllm/worker_controller/logs/std_server.log
+
+# Compare two log files side-by-side with Welch's t-test
+python vllm/worker_controller/scripts/parse_logs.py \
+    vllm/worker_controller/logs/std_server.log \
+    vllm/worker_controller/logs/workerlogs.log \
+    --labels "Standard" "WorkerController"
+```
+
